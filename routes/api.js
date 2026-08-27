@@ -3,7 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
-const ZHIPU_BALANCE_URL = 'https://open.bigmodel.cn/api/paas/v4/billing/info';
+// 智谱 GLM 余额接口（官方控制台业务接口），需登录态：Authorization(access_token) + 组织/项目 ID
+const ZHIPU_BALANCE_URL = 'https://open.bigmodel.cn/api/biz/account/query-customer-account-report';
 
 function hanaDataDir() {
   return process.env.HANA_HOME || path.join(os.homedir(), '.hanako');
@@ -145,15 +146,18 @@ export default function registerPluginUiRoutes(app, ctx) {
     return cfg.deepseekApiKey || (cfg.global && cfg.global.deepseekApiKey) || '';
   };
 
-  const getZhipuApiKey = async (c) => {
+  const getGlmAuth = async (c) => {
     const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
     const cfg = rctx && rctx.config;
-    if (!cfg) return '';
-    if (typeof cfg.get === 'function') {
-      try { const v = await cfg.get('zhipuApiKey'); return v || ''; }
-      catch (e) { return ''; }
-    }
-    return cfg.zhipuApiKey || (cfg.global && cfg.global.zhipuApiKey) || '';
+    const get = async (key) => {
+      if (!cfg) return '';
+      if (typeof cfg.get === 'function') {
+        try { const v = await cfg.get(key); return v || ''; }
+        catch (e) { return ''; }
+      }
+      return cfg[key] || (cfg.global && cfg.global[key]) || '';
+    };
+    return { token: await get('glmAccessToken'), org: await get('glmOrgId'), project: await get('glmProjectId') };
   };
 
   const configShape = async (c) => {
@@ -206,18 +210,23 @@ export default function registerPluginUiRoutes(app, ctx) {
   });
 
   // ---- 余额查询（智谱 GLM API）----
-  // 接口非官方公开文档，社区实现：GET https://open.bigmodel.cn/api/paas/v4/billing/info
-  // Bearer 认证，返回 { data: { total_balance } } 或顶层 { balance }；可能随时变更，失败只影响余额一格
+  // 官方控制台业务接口，需登录态（非 API Key）：Authorization=access_token + Bigmodel-Organization + Bigmodel-Project
+  // 返回 data: { balance, availableBalance, rechargeAmount, giveAmount, totalSpendAmount, frozenBalance }
   app.get('/api/glm-balance', async (c) => {
     log('glm balance request');
-    const apiKey = await getZhipuApiKey(c);
-    if (!apiKey) {
-      return c.json({ ok: false, needKey: true, message: '未配置智谱 GLM API Key，请在插件设置中填写。' });
+    const auth = await getGlmAuth(c);
+    if (!auth.token || !auth.org || !auth.project) {
+      return c.json({ ok: false, needKey: true, message: '未配置智谱 GLM 登录态。请在插件设置中填写 access_token / 组织ID / 项目ID。' });
     }
     try {
       const rctx = c.get('pluginCtx') || ctx;
       const res = await rctx.network.fetch(ZHIPU_BALANCE_URL, {
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        headers: {
+          Authorization: auth.token,
+          'Bigmodel-Organization': auth.org,
+          'Bigmodel-Project': auth.project,
+          'Content-Type': 'application/json',
+        },
         timeoutMs: 8000,
       });
       log('glm balance: status=' + res.status);
@@ -225,11 +234,20 @@ export default function registerPluginUiRoutes(app, ctx) {
         return c.json({ ok: false, message: `智谱余额接口返回 ${res.status}` });
       }
       const data = await res.json();
-      const inner = (data && data.data) || data || {};
-      const total = num(inner.total_balance != null ? inner.total_balance : inner.balance);
+      if (data && data.code && data.code !== 200) {
+        return c.json({ ok: false, message: data.msg || '智谱余额查询失败' });
+      }
+      const inner = (data && data.data) || {};
+      const total = num(inner.balance != null ? inner.balance : inner.availableBalance);
       return c.json({
         ok: true,
-        balance: { currency: 'CNY', total },
+        balance: {
+          currency: 'CNY',
+          total,
+          available: num(inner.availableBalance),
+          recharge: num(inner.rechargeAmount),
+          give: num(inner.giveAmount),
+        },
       });
     } catch (err) {
       log('glm balance error: ' + String(err && err.message || err));
@@ -291,6 +309,7 @@ export default function registerPluginUiRoutes(app, ctx) {
 
   // ---- 配置状态 ----
   app.get('/api/status', async (c) => {
-    return c.json({ ok: true, hasKey: !!(await getApiKey(c)), hasGlmKey: !!(await getZhipuApiKey(c)) });
+    const a = await getGlmAuth(c);
+    return c.json({ ok: true, hasKey: !!(await getApiKey(c)), hasGlmKey: !!(a.token && a.org && a.project) });
   });
 }

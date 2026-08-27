@@ -148,7 +148,7 @@ function Panel() {
           <StatBox
             label="GLM 余额"
             value={glmBalance && glmBalance.ok && glmBalance.balance ? fmtMoney(glmBalance.balance.total) : '-'}
-            sub={glmBalance && glmBalance.needKey ? '需配置 API Key' : glmBalance && !glmBalance.ok ? '查询失败' : '智谱现金余额'}
+            sub={glmBalance && glmBalance.needKey ? '需配置登录态' : !glmBalance || !glmBalance.ok ? '查询失败' : `可用 ${fmtMoney(glmBalance.balance.available)}`}
           />
           <StatBox label="今日 Token" value={today ? fmtNum(today.tokens) : '-'} sub={today ? `${today.calls} 次调用` : ''} />
           <StatBox label="今日费用" value={today ? fmtMoney(today.cost) : '-'} sub="按官方定价估算" />
