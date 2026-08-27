@@ -1,0 +1,12 @@
+node_modules/
+dist/
+vendor/
+assets/panel.js
+assets/panel.css
+assets/deepseek-usage-monitor.css
+*.bak-*
+*.zip
+*.tgz
+.git/
+.DS_Store
+Thumbs.db

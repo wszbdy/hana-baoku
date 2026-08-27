@@ -1,0 +1,44 @@
+{
+  "manifestVersion": 1,
+  "id": "deepseek-usage-monitor",
+  "name": "DeepSeek Usage Monitor",
+  "version": "0.2.0",
+  "description": "侧栏显示 DeepSeek / 智谱 GLM 余额、token 用量、缓存命中率与估算费用（读取 Hana usage-ledger + 两家官方 API）。",
+  "minAppVersion": "0.159.0",
+  "trust": "full-access",
+  "capabilities": ["network.fetch"],
+  "network": {
+    "allowedHosts": ["api.deepseek.com", "open.bigmodel.cn"],
+    "methods": ["GET"],
+    "defaultTimeoutMs": 10000,
+    "maxResponseBytes": 262144
+  },
+  "contributes": {
+    "configuration": {
+      "properties": {
+        "deepseekApiKey": {
+          "type": "string",
+          "title": "DeepSeek API Key",
+          "description": "用于查询余额的 DeepSeek API Key（sk- 开头），仅本机使用，不会上传。",
+          "default": ""
+        },
+        "zhipuApiKey": {
+          "type": "string",
+          "title": "智谱 GLM API Key",
+          "description": "用于查询 GLM 余额的智谱开放平台 API Key（国内版 open.bigmodel.cn 签发，形式如 a1b2c3.xxxx），仅本机使用，不会上传。",
+          "default": ""
+        }
+      }
+    },
+    "page": {
+      "title": "王之宝库",
+      "route": "/page",
+      "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M5 5h14v14H5z\"/><path d=\"M9 9h6M9 13h6\"/></svg>"
+    },
+    "widget": {
+      "title": "王之宝库",
+      "route": "/widget",
+      "icon": "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\"><path d=\"M8 7l-4 5 4 5\"/><path d=\"M16 7l4 5-4 5\"/></svg>"
+    }
+  }
+}

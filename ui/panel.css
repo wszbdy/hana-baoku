@@ -1,0 +1,106 @@
+/* ═══════════════════════════════════════════
+   王之宝库 — 浅色华丽主题 (无外部依赖)
+   ═══════════════════════════════════════════ */
+
+html, body, #root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: linear-gradient(145deg, #faf8f5 0%, #f5f0e8 40%, #f8f4ee 100%);
+  color: #3d3427;
+  font-family: "Microsoft YaHei", "PingFang SC", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.plugin-panel {
+  min-height: 100vh;
+  box-sizing: border-box;
+  padding: 16px;
+  background: linear-gradient(145deg, #faf8f5 0%, #f5f0e8 40%, #f8f4ee 100%);
+}
+
+body[data-surface="widget"] .plugin-panel {
+  padding: 12px;
+}
+
+/* ─── 华丽标题（金色渐变+微光） ─── */
+.hana-plugin-card-title {
+  font-family: "STKaiti", "KaiTi", "楷体", "Microsoft YaHei", serif !important;
+  font-size: 1.4em !important;
+  font-weight: 700 !important;
+  background: linear-gradient(135deg, #b8860b 0%, #daa520 30%, #ffd700 50%, #daa520 70%, #b8860b 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: 0.1em;
+  animation: shimmer 3s ease-in-out infinite;
+  text-shadow: none;
+}
+
+@keyframes shimmer {
+  0%, 100% { background-position: 0% center; }
+  50% { background-position: 200% center; }
+}
+
+.hana-plugin-card-description {
+  font-family: "STKaiti", "KaiTi", serif !important;
+  font-style: italic;
+  color: rgba(184, 134, 11, 0.5) !important;
+  letter-spacing: 0.05em;
+}
+
+/* ─── 卡片外壳（浅色毛玻璃） ─── */
+.hana-plugin-card {
+  background: rgba(255, 255, 255, 0.7) !important;
+  border: 1px solid rgba(218, 165, 32, 0.15) !important;
+  border-radius: 16px !important;
+  box-shadow: 0 4px 20px rgba(184, 134, 11, 0.08), 0 1px 4px rgba(0, 0, 0, 0.04) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  overflow: hidden;
+}
+
+.hana-plugin-card-header {
+  border-bottom: 1px solid rgba(218, 165, 32, 0.1) !important;
+  background: linear-gradient(180deg, rgba(255, 215, 0, 0.04), transparent);
+}
+
+.hana-plugin-card-body {
+  padding: 16px !important;
+}
+
+/* ─── 刷新按钮 ─── */
+.hana-plugin-button-ghost {
+  color: rgba(184, 134, 11, 0.7) !important;
+  border: 1px solid rgba(218, 165, 32, 0.2);
+  border-radius: 20px;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.hana-plugin-button-ghost:hover:not(:disabled) {
+  color: #b8860b !important;
+  border-color: rgba(218, 165, 32, 0.5);
+  background: rgba(255, 215, 0, 0.08);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(184, 134, 11, 0.12);
+}
+
+/* ─── 空状态 ─── */
+.hana-plugin-empty-title {
+  color: rgba(184, 134, 11, 0.8) !important;
+}
+
+.hana-plugin-empty-description {
+  color: rgba(60, 52, 39, 0.4) !important;
+}
+
+/* ─── 滚动条 ─── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(184, 134, 11, 0.15); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(184, 134, 11, 0.3); }
