@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "deepseek-usage-monitor",
   "name": "DeepSeek Usage Monitor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "侧栏显示 DeepSeek / 智谱 GLM 余额、token 用量、缓存命中率与估算费用（读取 Hana usage-ledger + 官方 API）。",
   "minAppVersion": "0.159.0",
   "trust": "full-access",

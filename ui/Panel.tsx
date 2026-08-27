@@ -113,7 +113,7 @@ function Panel() {
     return () => clearInterval(timer);
   }, [isWidget, load]);
 
-  const rows = (usage && usage.byModel) || [];
+  const rows = ((usage && usage.byModel) || []).slice().sort((a, b) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0));
   const today = usage && usage.today;
   const total = usage && usage.total;
 
