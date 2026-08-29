@@ -2,13 +2,13 @@
   "manifestVersion": 1,
   "id": "deepseek-usage-monitor",
   "name": "DeepSeek Usage Monitor",
-  "version": "0.4.0",
-  "description": "侧栏显示 DeepSeek / 智谱 GLM 余额、token 用量、缓存命中率与估算费用，含近 30 天趋势图与月度费用预测（读取 Hana usage-ledger + 官方 API）。",
+  "version": "0.5.0",
+  "description": "侧栏聚合显示 DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter 余额、token 用量、缓存命中率与估算费用，含近 30 天趋势图与月度费用预测（读取 Hana usage-ledger + 官方 API）。",
   "minAppVersion": "0.159.0",
   "trust": "full-access",
   "capabilities": ["network.fetch"],
   "network": {
-    "allowedHosts": ["api.deepseek.com", "open.bigmodel.cn"],
+    "allowedHosts": ["api.deepseek.com", "open.bigmodel.cn", "api.moonshot.cn", "api.siliconflow.cn", "openrouter.ai"],
     "methods": ["GET"],
     "defaultTimeoutMs": 10000,
     "maxResponseBytes": 262144
@@ -38,6 +38,24 @@
           "type": "string",
           "title": "智谱项目 ID",
           "description": "智谱项目的 projectId（如 proj_xxx），在登录态里获取。",
+          "default": ""
+        },
+        "kimiApiKey": {
+          "type": "string",
+          "title": "Kimi API Key",
+          "description": "Moonshot 开放平台的 API Key（sk- 开头），用于查询 Kimi 余额。可选，不填则不显示该平台。",
+          "default": ""
+        },
+        "siliconflowApiKey": {
+          "type": "string",
+          "title": "硅基流动 API Key",
+          "description": "SiliconFlow 的 API Key（sk- 开头），用于查询余额。可选，不填则不显示该平台。",
+          "default": ""
+        },
+        "openrouterApiKey": {
+          "type": "string",
+          "title": "OpenRouter API Key",
+          "description": "OpenRouter 的 API Key（sk-or- 开头），用于查询额度/用量（美元计价）。可选，不填则不显示该平台。",
           "default": ""
         }
       }

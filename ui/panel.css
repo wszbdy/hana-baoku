@@ -99,6 +99,18 @@ body[data-surface="widget"] .plugin-panel {
   color: rgba(60, 52, 39, 0.4) !important;
 }
 
+/* ─── 余额未配置引导 ─── */
+.balance-guide {
+  border: 1px dashed rgba(218, 165, 32, 0.35);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: rgba(146, 104, 6, 0.75);
+  background: rgba(255, 250, 235, 0.5);
+}
+
 /* ─── 区块标题（金色小徽 + 楷体） ─── */
 .section-title {
   display: flex;

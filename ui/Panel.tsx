@@ -22,10 +22,10 @@ function fmtNum(n: number) {
   return String(Math.round(n));
 }
 
-function fmtMoney(n: number) {
+function fmtMoney(n: number, sym = '¥') {
   if (!n && n !== 0) return '-';
-  if (n > 0 && n < 0.01) return '¥' + Number(n).toFixed(4);
-  return '¥' + Number(n).toFixed(2);
+  if (n > 0 && n < 0.01) return sym + Number(n).toFixed(4);
+  return sym + Number(n).toFixed(2);
 }
 
 // 坐标轴刻度用：去尾零（0.5 / 1.2 / 40）
@@ -135,6 +135,69 @@ function StatBox({ label, value, sub, big }: { label: string; value: React.React
       <div style={statLabelStyle}>{label}</div>
       <div style={{ ...statValueStyle, fontSize: big ? 28 : 24 }}>{value}</div>
       {sub ? <div style={statSubStyle}>{sub}</div> : null}
+    </div>
+  );
+}
+
+/* ─── 余额供应商卡片：按各家响应结构渲染主值 + 副行；失败态显示错误信息 ─── */
+type BalResult = {
+  id: string;
+  name: string;
+  currency: string;
+  ok: boolean;
+  available?: boolean;
+  balance?: any;
+  message?: string;
+};
+
+function BalanceCard({ r }: { r: BalResult }) {
+  let value: React.ReactNode = '-';
+  let sub: React.ReactNode = '';
+  let fail = false;
+  const b = r.balance;
+
+  if (!r.ok) {
+    fail = true;
+    sub = '查询失败' + (r.message ? '：' + r.message : '');
+  } else if (b) {
+    switch (r.id) {
+      case 'deepseek':
+        value = fmtMoney(b.total);
+        sub = `赠送 ${fmtMoney(b.granted)} · 充值 ${fmtMoney(b.toppedUp)}` + (r.available === false ? ' · API 欠费不可用' : '');
+        break;
+      case 'glm':
+        value = fmtMoney(b.total);
+        sub = `可用 ${fmtMoney(b.available)} · 赠送 ${fmtMoney(b.give)}`;
+        break;
+      case 'kimi':
+        value = fmtMoney(b.total);
+        sub = `代金券 ${fmtMoney(b.voucher)} · 现金 ${fmtMoney(b.cash)}`;
+        break;
+      case 'siliconflow':
+        value = fmtMoney(b.total);
+        sub = `充值 ${fmtMoney(b.charge)} · 总额度 ${fmtMoney(b.all)}` + (b.status ? ` · ${b.status}` : '');
+        break;
+      case 'openrouter':
+        if (b.unlimited) {
+          value = '无限额度';
+          sub = `已用 ${fmtMoney(b.used, '$')}` + (b.freeTier ? ' · 免费层' : '');
+        } else {
+          value = fmtMoney(b.remaining, '$');
+          sub = `额度 ${fmtMoney(b.limit, '$')} · 已用 ${fmtMoney(b.used, '$')}` + (b.freeTier ? ' · 免费层' : '');
+        }
+        break;
+      default:
+        value = '-';
+    }
+  }
+
+  return (
+    <div style={{ ...statBoxStyle, ...(fail ? { borderColor: 'rgba(200, 80, 60, 0.25)' } : null) }}>
+      <div style={statLabelStyle}>{r.name}</div>
+      <div style={{ ...statValueStyle, ...(fail ? { color: 'rgba(160, 90, 74, 0.75)' } : null) }}>{value}</div>
+      {sub ? (
+        <div style={{ ...statSubStyle, ...(fail ? { color: 'rgba(160, 90, 74, 0.65)' } : null), lineHeight: 1.4 }}>{sub}</div>
+      ) : null}
     </div>
   );
 }
@@ -341,8 +404,7 @@ function TrendTable({ daily }: { daily: DailyPoint[] }) {
 function Panel() {
   const surface = document.getElementById('root')?.dataset.surface || 'page';
   const isWidget = surface === 'widget';
-  const [balance, setBalance] = useState<any>(null);
-  const [glmBalance, setGlmBalance] = useState<any>(null);
+  const [balances, setBalances] = useState<BalResult[] | null>(null);
   const [usage, setUsage] = useState<any>(null);
   const [forecast, setForecast] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -363,24 +425,15 @@ function Panel() {
       .then((r) => r.json())
       .then((f) => setForecast(f))
       .catch(() => { /* 预测失败不阻塞主面板 */ });
+    // 余额聚合：单家失败由各家卡片自己展示，不进全局 error
     hana.api
-      .fetch('api/balance')
+      .fetch('api/balances')
       .then((r) => r.json())
       .then((b) => {
-        setBalance(b);
-        if (b && !b.ok && b.needKey) setError('未配置 DeepSeek API Key：插件设置 → 填写 sk- 开头的 Key 后点刷新');
-        else if (b && !b.ok && b.message) setError('余额：' + b.message);
+        if (b && b.ok) setBalances(b.results || []);
+        else if (b && b.message) setError('余额：' + b.message);
       })
       .catch(() => setError('余额查询失败'));
-    hana.api
-      .fetch('api/glm-balance')
-      .then((r) => r.json())
-      .then((b) => {
-        setGlmBalance(b);
-        if (b && !b.ok && b.needKey) setError('未配置智谱 GLM API Key：插件设置 → 填写后点刷新');
-        else if (b && !b.ok && b.message) setError('GLM 余额：' + b.message);
-      })
-      .catch(() => setError('GLM 余额查询失败'));
     setLoading(false);
   }, []);
 
@@ -400,7 +453,7 @@ function Panel() {
       } catch (e) { /* 忽略：宿主不支持 resize 时保持初始高度 */ }
     });
     return () => cancelAnimationFrame(raf);
-  }, [isWidget, usage, forecast, balance, glmBalance, error]);
+  }, [isWidget, usage, forecast, balances, error]);
 
   const rows: any[] = ((usage && usage.byModel) || []).slice().sort((a: any, b: any) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0));
   const today = usage && usage.today;
@@ -431,20 +484,20 @@ function Panel() {
       >
         {error ? <EmptyState title="需要处理" description={error} /> : null}
 
-        <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-          <StatBox
-            big
-            label="DeepSeek 余额"
-            value={balance && balance.ok && balance.balance ? fmtMoney(balance.balance.total) : '-'}
-            sub={balance && balance.balance ? `赠送 ${fmtMoney(balance.balance.granted)} · 充值 ${fmtMoney(balance.balance.toppedUp)}` : balance && balance.needKey ? '需配置 API Key' : '查询失败'}
-          />
-          <StatBox
-            big
-            label="GLM 余额"
-            value={glmBalance && glmBalance.ok && glmBalance.balance ? fmtMoney(glmBalance.balance.total) : '-'}
-            sub={glmBalance && glmBalance.needKey ? '需配置登录态' : !glmBalance || !glmBalance.ok ? '查询失败' : `可用 ${fmtMoney(glmBalance.balance.available)}`}
-          />
-        </div>
+        {/* 余额卡片流：只渲染配置了 key 的平台；全未配时显示引导 */}
+        <SectionTitle>平台余额</SectionTitle>
+        {balances === null ? null : balances.length === 0 ? (
+          <div className="balance-guide">
+            尚未配置任何平台的密钥 —— 在插件设置中填写 DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter
+            的 Key 后点刷新，余额卡片会自动出现。
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            {balances.map((r: BalResult) => (
+              <BalanceCard key={r.id} r={r} />
+            ))}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <StatBox label="今日 Token" value={today ? fmtNum(today.tokens) : '-'} sub={today ? `${today.calls} 次调用` : ''} />

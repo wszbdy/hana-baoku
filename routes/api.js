@@ -5,6 +5,12 @@ import os from 'node:os';
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 // 智谱 GLM 余额接口（官方控制台业务接口），需登录态：Authorization(access_token) + 组织/项目 ID
 const ZHIPU_BALANCE_URL = 'https://open.bigmodel.cn/api/biz/account/query-customer-account-report';
+// Kimi (Moonshot) 余额接口
+const KIMI_BALANCE_URL = 'https://api.moonshot.cn/v1/users/me/balance';
+// 硅基流动用户信息接口（含余额）
+const SILICONFLOW_INFO_URL = 'https://api.siliconflow.cn/v1/user/info';
+// OpenRouter Key 信息接口（usage / limit）
+const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
 
 function hanaDataDir() {
   return process.env.HANA_HOME || path.join(os.homedir(), '.hanako');
@@ -140,24 +146,169 @@ function estimateCost(rec) {
   return (u.cacheRead / 1e6) * p.hit + (miss / 1e6) * p.miss + (u.output / 1e6) * p.out;
 }
 
+// ---- 各家余额响应解析（纯函数：输入响应 JSON，输出 { balance, ... }；形态异常时 throw）----
+
+// DeepSeek: { is_available, balance_infos: [{ currency, total_balance, granted_balance, topped_up_balance }] }
+function parseDeepSeekBalance(data) {
+  if (!data || !Array.isArray(data.balance_infos) || data.balance_infos.length === 0) {
+    throw new Error("DeepSeek 响应缺少 balance_infos");
+  }
+  const infos = data.balance_infos;
+  const cny = infos.find((i) => i && i.currency === 'CNY') || infos[0];
+  return {
+    available: !!(data && data.is_available),
+    balance: cny
+      ? { total: num(cny.total_balance), granted: num(cny.granted_balance), toppedUp: num(cny.topped_up_balance) }
+      : null,
+  };
+}
+
+// 智谱 GLM: { code, msg, data: { balance, availableBalance, rechargeAmount, giveAmount } }
+function parseGlmBalance(data) {
+  if (data && data.code && data.code !== 200) throw new Error(data.msg || '智谱余额查询失败');
+  const inner = (data && data.data) || {};
+  const total = num(inner.balance != null ? inner.balance : inner.availableBalance);
+  return {
+    balance: { total, available: num(inner.availableBalance), recharge: num(inner.rechargeAmount), give: num(inner.giveAmount) },
+  };
+}
+
+// Kimi: { status: true, data: { available_balance, voucher_balance, cash_balance } }
+function parseKimiBalance(data) {
+  if (!data || data.status !== true || !data.data) {
+    throw new Error((data && (data.message || data.msg)) || 'Kimi 接口返回异常');
+  }
+  const d = data.data;
+  return {
+    balance: { total: num(d.available_balance), voucher: num(d.voucher_balance), cash: num(d.cash_balance) },
+  };
+}
+
+// 硅基流动: { data: { balance, chargeBalance, totalBalance, status } }（字段形态容错：data 缺失时直接看顶层）
+function parseSiliconFlowBalance(data) {
+  const d = (data && data.data && typeof data.data === 'object') ? data.data : data;
+  if (!d || d.balance == null) throw new Error((data && (data.message || data.msg)) || '硅基流动响应缺少 balance 字段');
+  return {
+    balance: { total: num(d.balance), charge: num(d.chargeBalance), all: num(d.totalBalance), status: d.status != null ? String(d.status) : '' },
+  };
+}
+
+// OpenRouter: { data: { usage, limit, is_free_tier } }，limit 为 null 表示不限额（显示「无限额度」+ 已用）
+function parseOpenRouterBalance(data) {
+  const d = (data && data.data) || null;
+  if (!d || (d.limit == null && d.usage == null)) {
+    throw new Error("OpenRouter 响应缺少 usage/limit");
+  }
+  const used = num(d.usage);
+  if (d.limit == null) return { balance: { unlimited: true, used, freeTier: !!d.is_free_tier } };
+  const limit = num(d.limit);
+  return { balance: { unlimited: false, used, limit, remaining: limit - used, freeTier: !!d.is_free_tier } };
+}
+
+// 供 node 内联 mock 自验使用（插件运行时只取 default 导出，此处无副作用）
+export const balanceParsers = {
+  parseDeepSeekBalance,
+  parseGlmBalance,
+  parseKimiBalance,
+  parseSiliconFlowBalance,
+  parseOpenRouterBalance,
+};
+
+// ---- 余额供应商注册表：每家一个 adapter（端点 + 头 + 解析），新增平台只需追加一条 ----
+// query(env) 返回 null 表示「未配置 key，跳过」；{ ok, ... } 为查询结果；throw 由路由层兜底为 ok:false
+const BALANCE_PROVIDERS = [
+  {
+    id: 'deepseek', name: 'DeepSeek', currency: 'CNY',
+    keys: ['deepseekApiKey'],
+    async query(env) {
+      const key = await env.getKey('deepseekApiKey');
+      if (!key) return null;
+      const res = await env.fetch(DEEPSEEK_BALANCE_URL, {
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, message: `余额接口返回 ${res.status}` };
+      const { available, balance } = parseDeepSeekBalance(await res.json());
+      return { ok: true, available, balance };
+    },
+  },
+  {
+    id: 'glm', name: '智谱 GLM', currency: 'CNY',
+    keys: ['glmAccessToken', 'glmOrgId', 'glmProjectId'],
+    async query(env) {
+      const [token, org, project] = await Promise.all([
+        env.getKey('glmAccessToken'), env.getKey('glmOrgId'), env.getKey('glmProjectId'),
+      ]);
+      if (!token || !org || !project) return null;
+      const res = await env.fetch(ZHIPU_BALANCE_URL, {
+        headers: {
+          Authorization: token,
+          'Bigmodel-Organization': org,
+          'Bigmodel-Project': project,
+          'Content-Type': 'application/json',
+        },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, message: `智谱余额接口返回 ${res.status}` };
+      const { balance } = parseGlmBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+  {
+    id: 'kimi', name: 'Kimi', currency: 'CNY',
+    keys: ['kimiApiKey'],
+    async query(env) {
+      const key = await env.getKey('kimiApiKey');
+      if (!key) return null;
+      const res = await env.fetch(KIMI_BALANCE_URL, {
+        headers: { Authorization: `Bearer ${key}` },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, message: `Kimi 余额接口返回 ${res.status}` };
+      const { balance } = parseKimiBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+  {
+    id: 'siliconflow', name: '硅基流动', currency: 'CNY',
+    keys: ['siliconflowApiKey'],
+    async query(env) {
+      const key = await env.getKey('siliconflowApiKey');
+      if (!key) return null;
+      const res = await env.fetch(SILICONFLOW_INFO_URL, {
+        headers: { Authorization: `Bearer ${key}` },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, message: `硅基流动接口返回 ${res.status}` };
+      const { balance } = parseSiliconFlowBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+  {
+    id: 'openrouter', name: 'OpenRouter', currency: 'USD',
+    keys: ['openrouterApiKey'],
+    async query(env) {
+      const key = await env.getKey('openrouterApiKey');
+      if (!key) return null;
+      const res = await env.fetch(OPENROUTER_KEY_URL, {
+        headers: { Authorization: `Bearer ${key}` },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, message: `OpenRouter 接口返回 ${res.status}` };
+      const { balance } = parseOpenRouterBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+];
+
 export default function registerPluginUiRoutes(app, ctx) {
   const log = (msg) => { try { if (ctx && ctx.log) ctx.log.info('[dsum] ' + msg); } catch (e) {} };
 
-  const getApiKey = async (c) => {
+  // 配置读取器：兼容 cfg.get() 方法与普通对象两种宿主形态
+  const makeKeyGetter = (c) => {
     const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
     const cfg = rctx && rctx.config;
-    if (!cfg) return '';
-    if (typeof cfg.get === 'function') {
-      try { const v = await cfg.get('deepseekApiKey'); return v || ''; }
-      catch (e) { return ''; }
-    }
-    return cfg.deepseekApiKey || (cfg.global && cfg.global.deepseekApiKey) || '';
-  };
-
-  const getGlmAuth = async (c) => {
-    const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
-    const cfg = rctx && rctx.config;
-    const get = async (key) => {
+    return async (key) => {
       if (!cfg) return '';
       if (typeof cfg.get === 'function') {
         try { const v = await cfg.get(key); return v || ''; }
@@ -165,102 +316,31 @@ export default function registerPluginUiRoutes(app, ctx) {
       }
       return cfg[key] || (cfg.global && cfg.global[key]) || '';
     };
-    return { token: await get('glmAccessToken'), org: await get('glmOrgId'), project: await get('glmProjectId') };
   };
 
-  const configShape = async (c) => {
-    try {
-      const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
-      const cfg = rctx && rctx.config;
-      if (!cfg) return 'null';
-      if (typeof cfg.get === 'function') return 'has-get-method';
-      const s = JSON.stringify(cfg);
-      return s.length > 400 ? s.slice(0, 400) + '...' : s;
-    } catch (e) { return 'err:' + e.message; }
-  };
+  // ---- 余额聚合：按配置了 key 的供应商逐家查询，单家失败不影响其他家 ----
+  // 请求头组装与响应解析都在各家的 adapter（BALANCE_PROVIDERS）里，新增平台只需追加一条
+  app.get('/api/balances', async (c) => {
+    log('balances request');
+    const getKey = makeKeyGetter(c);
+    const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
+    const fetcher = rctx && rctx.network && rctx.network.fetch;
+    if (!fetcher) return c.json({ ok: false, message: '宿主未提供 network.fetch 能力' });
 
-  // ---- 余额查询（DeepSeek API）----
-  app.get('/api/balance', async (c) => {
-    log('balance request');
-    const apiKey = await getApiKey(c);
-    if (!apiKey) {
-      log('balance: no key. configShape=' + await configShape(c));
-      return c.json({ ok: false, needKey: true, message: '未配置 DeepSeek API Key，请在插件设置中填写。' });
-    }
-    try {
-      const rctx = c.get('pluginCtx') || ctx;
-      const res = await rctx.network.fetch(DEEPSEEK_BALANCE_URL, {
-        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeoutMs: 8000,
-      });
-      log('balance: status=' + res.status);
-      if (!res.ok) {
-        return c.json({ ok: false, message: `余额接口返回 ${res.status}` });
+    const results = await Promise.all(BALANCE_PROVIDERS.map(async (p) => {
+      let r;
+      try {
+        r = await p.query({ getKey, fetch: fetcher, log });
+      } catch (err) {
+        r = { ok: false, message: String(err && err.message || err) };
       }
-      const data = await res.json();
-      const infos = (data && data.balance_infos) || [];
-      const cny = infos.find((i) => i && i.currency === 'CNY') || infos[0];
-      log('balance: ok');
-      return c.json({
-        ok: true,
-        available: data && data.is_available,
-        balance: cny ? {
-          currency: cny.currency,
-          total: num(cny.total_balance),
-          granted: num(cny.granted_balance),
-          toppedUp: num(cny.topped_up_balance),
-        } : null,
-      });
-    } catch (err) {
-      log('balance error: ' + String(err && err.message || err));
-      return c.json({ ok: false, message: String(err && err.message || err) });
-    }
-  });
+      if (!r) return null; // 未配置 key，跳过该家
+      log('balances[' + p.id + ']: ' + (r.ok ? 'ok' : 'fail ' + (r.message || '')));
+      return { id: p.id, name: p.name, currency: p.currency, ...r };
+    }));
 
-  // ---- 余额查询（智谱 GLM API）----
-  // 官方控制台业务接口，需登录态（非 API Key）：Authorization=access_token + Bigmodel-Organization + Bigmodel-Project
-  // 返回 data: { balance, availableBalance, rechargeAmount, giveAmount, totalSpendAmount, frozenBalance }
-  app.get('/api/glm-balance', async (c) => {
-    log('glm balance request');
-    const auth = await getGlmAuth(c);
-    if (!auth.token || !auth.org || !auth.project) {
-      return c.json({ ok: false, needKey: true, message: '未配置智谱 GLM 登录态。请在插件设置中填写 access_token / 组织ID / 项目ID。' });
-    }
-    try {
-      const rctx = c.get('pluginCtx') || ctx;
-      const res = await rctx.network.fetch(ZHIPU_BALANCE_URL, {
-        headers: {
-          Authorization: auth.token,
-          'Bigmodel-Organization': auth.org,
-          'Bigmodel-Project': auth.project,
-          'Content-Type': 'application/json',
-        },
-        timeoutMs: 8000,
-      });
-      log('glm balance: status=' + res.status);
-      if (!res.ok) {
-        return c.json({ ok: false, message: `智谱余额接口返回 ${res.status}` });
-      }
-      const data = await res.json();
-      if (data && data.code && data.code !== 200) {
-        return c.json({ ok: false, message: data.msg || '智谱余额查询失败' });
-      }
-      const inner = (data && data.data) || {};
-      const total = num(inner.balance != null ? inner.balance : inner.availableBalance);
-      return c.json({
-        ok: true,
-        balance: {
-          currency: 'CNY',
-          total,
-          available: num(inner.availableBalance),
-          recharge: num(inner.rechargeAmount),
-          give: num(inner.giveAmount),
-        },
-      });
-    } catch (err) {
-      log('glm balance error: ' + String(err && err.message || err));
-      return c.json({ ok: false, message: String(err && err.message || err) });
-    }
+    const list = results.filter(Boolean);
+    return c.json({ ok: true, configured: list.length, results: list });
   });
 
   // ---- 用量统计（本地 usage-ledger）----
@@ -454,9 +534,14 @@ export default function registerPluginUiRoutes(app, ctx) {
     });
   });
 
-  // ---- 配置状态 ----
+  // ---- 配置状态：每家供应商的 hasKey 布尔（多字段的家要求全部填齐才算 true）----
   app.get('/api/status', async (c) => {
-    const a = await getGlmAuth(c);
-    return c.json({ ok: true, hasKey: !!(await getApiKey(c)), hasGlmKey: !!(a.token && a.org && a.project) });
+    const getKey = makeKeyGetter(c);
+    const providers = {};
+    for (const p of BALANCE_PROVIDERS) {
+      const vals = await Promise.all(p.keys.map((k) => getKey(k)));
+      providers[p.id] = vals.every(Boolean);
+    }
+    return c.json({ ok: true, providers, configured: Object.values(providers).filter(Boolean).length });
   });
 }
