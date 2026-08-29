@@ -217,6 +217,8 @@ type PlanInfo = {
   reason?: string;
   name?: string;
   planName?: string;
+  name?: string;
+  planName?: string;
   exhausted?: boolean;
   window?: PlanWindow[];
   message?: string;
@@ -278,7 +280,7 @@ function PlanSection({ plan }: { plan: PlanInfo | null }) {
   if (!plan) return null;
   return (
     <section style={{ marginBottom: 14 }}>
-      <SectionTitle>套餐用量</SectionTitle>
+      <SectionTitle>套餐用量{plan.name ? ' · ' + plan.name : ''}</SectionTitle>
       {!plan.ok ? (
         <div className="plan-note plan-note-fail">GLM Coding Plan 查询失败{plan.message ? '：' + plan.message : ''}</div>
       ) : !plan.hasPlan ? (
