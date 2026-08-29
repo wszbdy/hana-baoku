@@ -1,32 +1,74 @@
-# DeepSeek Usage Monitor
+# 王之宝库 · Baoku Monitor
 
-Hana plugin id: `deepseek-usage-monitor`.
+> HanaAgent 余额与用量监控插件 —— 一个面板看全所有 AI 账户的钱。
 
-## Contents
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- `manifest.json`: plugin metadata and capability declarations.
-- `routes/ui.js`: iframe shell and static asset route.
-- `ui/Panel.tsx`: React iframe UI built with Hana SDK components.
-- `vite.config.ts`: builds `assets/panel.js` and `assets/panel.css`.
+## 功能
 
-## Development
+- **五平台余额聚合**：DeepSeek / 智谱 GLM / Kimi (Moonshot) / 硅基流动 / OpenRouter。填了 key 自动显示，没填自动隐藏，单家失败不拖垮其他家
+- **套餐用量仪表**：GLM Coding Plan 的 5 小时 / 周额度进度条，用量分级变色（金 → 琥珀 → 红），积分耗尽优雅提示
+- **套餐 API 用量**：接入智谱 `monitor/usage` 接口家族，按模型 token 消耗汇总 + 每小时消耗柱状图（纯 SVG）
+- **30 天趋势**：token / 费用日曲线，悬浮读数 + 键盘可访问
+- **月度费用预测**：近 7 天 / 近 30 天双情景外推，峰谷时段拆分 × 价格时间线，输出本月账单区间
+- **峰谷价格时间线**：DeepSeek 峰谷价（2026-08-17 起）、GLM 限时折扣（2026-08-26 起）等调价节点自动生效，无需手工改表
+
+## 支持平台与认证方式
+
+| 平台 | 余额 | 套餐用量 | 认证方式 |
+|---|---|---|---|
+| DeepSeek | ✅ | —（无订阅制） | API Key |
+| 智谱 GLM | ✅ | ✅ Coding Plan | 网页登录态三件套（access_token / 组织ID / 项目ID）|
+| Kimi (Moonshot) | ✅ | — | API Key |
+| 硅基流动 | ✅* | — | API Key（*国内账号余额接口官方迁移中暂未开放）|
+| OpenRouter | ✅ | — | API Key |
+
+## 安装
+
+HanaAgent → 设置 → 插件 → 拖入 zip 包（从 [Releases](../../releases) 下载或按下方自行构建）。
+
+## 构建
 
 ```bash
 npm install
 npm run build:ui
-npm run typecheck
 ```
 
-Install by dragging this folder into Hana Settings > Plugins, or place it under the user plugin directory reported by `/api/plugins/settings`.
+产物为 `assets/panel.js` 与 `assets/deepseek-usage-monitor.css`。打包安装：将 `manifest.json`、`routes/`、`assets/` 压成 zip 拖入 Hana。
 
-## File and resource rules
+## 配置
 
-- The sample note tool writes plugin-owned output under `ctx.dataDir`, then returns it through `stageFile()` as SessionFile media.
-- If you add a feature that reads, edits, or watches user files, use `ctx.resources` with ResourceRef inputs and declare the matching `resource.read`, `resource.search`, `resource.write`, `resource.materialize`, or `resource.watch` capability.
-- Use `ctx.resources.watch()` / `ctx.resources.subscribe()` for backend resource watches, release the returned handle, and filter `resource.changed` / `resource.deleted` / `resource.renamed` bus events by `resourceKeys`.
-- Browser iframe code may open, pick, or request access to resources through `hana.resources.*`, but real file reads and writes belong in server-side plugin tools, routes, or lifecycle code.
-- Do not treat `SessionFile`, mount, URL, or future remote resources as host-local paths. Use `ctx.resources.materialize(ref)` only for libraries that require a concrete execution path, and write back through ResourceIO explicitly.
-- If you create plugin-only chat runs, create sessions with `visibility: "plugin_private"` and return `createChatSurfaceCard(ctx, session.sessionRef ?? session, options)` from `details.card`. Do not hand-build path-only chat surface payloads.
-This plugin requires full-access because Hana page and widget contributions are route-backed WebView/iframe UI.
-Use WebView/iframe cards for existing web apps, remote sites, or standalone HTML. Use native `chat.surface` only for plugin-owned private session transcripts.
-The starter manifest grants only the host calls used by the sample panel. If you add `hana.resources.open()`, `hana.resources.pick()`, or `hana.resources.requestAccess()` calls, add the matching `resource.open`, `resource.pick`, or `resource.requestAccess` entries under `ui.hostCapabilities`.
+所有凭证通过 Hana 插件设置页填入，**仅存本机**（`plugin-data/<id>/config.json`），不参与构建、不上传。
+
+| 字段 | 说明 |
+|---|---|
+| `deepseekApiKey` | DeepSeek API Key（`sk-` 开头）|
+| `glmAccessToken` / `glmOrgId` / `glmProjectId` | 智谱网页登录态三件套（浏览器 F12 获取），余额与套餐共用 |
+| `kimiApiKey` | Moonshot API Key（`sk-` 开头）|
+| `siliconflowApiKey` | 硅基流动 API Key（`sk-` 开头）|
+| `openrouterApiKey` | OpenRouter API Key（`sk-or-` 开头）|
+| `glmPlanKey` | 智谱套餐 Key（Claude Code 的 `ANTHROPIC_AUTH_TOKEN`），仅用于用量查询 |
+
+## 费用估算口径
+
+费用为**估算值**（面板有标注），基于本地 usage-ledger 的 token 记录与公开定价：
+
+- DeepSeek：峰谷价（高峰 9:00-12:00 / 14:00-18:00，谷时减半），2026-08-17 起生效
+- 智谱 GLM：限时折扣价（2026-08-26 起，到期自动回落原价），以价格时间线表达
+- MiMo：统一价
+
+定价变动只需在 `routes/api.js` 的 `PRICING` 时间线追加条目，历史记录自动按时间归属。
+
+## 结构
+
+```
+manifest.json   插件元数据、能力声明、配置项
+routes/api.js   后端路由：余额聚合 / 套餐额度 / API 用量 / 用量统计 / 费用预测 / 价格时间线
+routes/ui.js    iframe 壳与静态资源路由
+ui/Panel.tsx    React 面板（余额卡片流 / 套餐进度条 / SVG 图表）
+ui/panel.css    样式（金/米色系，tabular-nums，CVD 友好配色验证）
+```
+
+## License
+
+[MIT](LICENSE)
