@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "deepseek-usage-monitor",
   "name": "DeepSeek Usage Monitor",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "侧栏聚合显示 DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter 余额、GLM Coding Plan 套餐用量、token 用量、缓存命中率与估算费用，含近 30 天趋势图与月度费用预测（读取 Hana usage-ledger + 官方 API）。",
   "minAppVersion": "0.159.0",
   "trust": "full-access",
@@ -56,6 +56,11 @@
           "type": "string",
           "title": "OpenRouter API Key",
           "description": "OpenRouter 的 API Key（sk-or- 开头），用于查询额度/用量（美元计价）。可选，不填则不显示该平台。",
+          "default": ""
+        },
+        "glmPlanKey": {
+          "title": "智谱套餐 Key",
+          "description": "GLM Coding Plan 的套餐 Key（Claude Code 里 ANTHROPIC_AUTH_TOKEN 那把），用于查询套餐 API 用量。可选，不填则不显示该板块。",
           "default": ""
         }
       }

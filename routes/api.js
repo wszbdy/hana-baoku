@@ -13,6 +13,9 @@ const SILICONFLOW_INFO_URL = 'https://api.siliconflow.com/v1/user/info';
 const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
 // 智谱 GLM Coding Plan 用量接口（官方 zai-coding-plugins 插件同款，国内站）
 const GLM_PLAN_QUOTA_URL = 'https://open.bigmodel.cn/api/monitor/usage/quota/limit';
+// 官方 glm-plan-usage 插件源码（zai-org/zai-coding-plugins）确认的用量监控接口家族：
+// Authorization 直接用套餐 Key（Claude Code 的 ANTHROPIC_AUTH_TOKEN，无 Bearer 前缀）
+const GLM_MODEL_USAGE_URL = 'https://open.bigmodel.cn/api/monitor/usage/model-usage';
 
 function hanaDataDir() {
   return process.env.HANA_HOME || path.join(os.homedir(), '.hanako');
@@ -276,6 +279,32 @@ function parseGlmPlanQuota(data) {
 // 供 mock 自验使用
 export const planParsers = { parseGlmPlanQuota };
 
+// ---- 套餐 API 用量解析（model-usage，纯函数）----
+// 实测响应：{ code:200, data: { x_time:[小时刻度], modelCallCount:[每小时调用],
+//   tokensUsage:[每小时 token], totalUsage: { totalModelCallCount, totalTokensUsage,
+//   modelSummaryList: [{ modelName, totalTokens }] }, modelDataList: [...] } }
+function parseGlmUsage(data) {
+  if (!data || typeof data !== 'object') throw new Error('智谱用量响应结构异常');
+  const d = (data && data.data) || data;
+  if (!Array.isArray(d.x_time)) throw new Error('智谱用量响应缺少 x_time');
+  const totalUsage = d.totalUsage || {};
+  const summary = Array.isArray(totalUsage.modelSummaryList)
+    ? totalUsage.modelSummaryList.map((s) => ({ model: s.modelName, totalTokens: num(s.totalTokens) }))
+    : [];
+  const byHour = d.x_time.map((t, i) => ({
+    time: t,
+    tokens: num((d.tokensUsage || [])[i]),
+    calls: num((d.modelCallCount || [])[i]),
+  }));
+  return {
+    totalCalls: num(totalUsage.totalModelCallCount),
+    totalTokens: num(totalUsage.totalTokensUsage),
+    summary,
+    byHour,
+  };
+}
+export const usageParsers = { parseGlmUsage };
+
 // ---- 余额供应商注册表：每家一个 adapter（端点 + 头 + 解析），新增平台只需追加一条 ----
 // query(env) 返回 null 表示「未配置 key，跳过」；{ ok, ... } 为查询结果；throw 由路由层兜底为 ok:false
 const BALANCE_PROVIDERS = [
@@ -480,6 +509,47 @@ export default function registerPluginUiRoutes(app, ctx) {
       window: r.windows, // [{ type:'5h'|'weekly'|..., used, total, percent, resetAt }]
       message: r.exhausted ? '套餐积分已用尽' : '',
     });
+  });
+
+  // ---- 套餐 API 用量（model-usage，套餐 Key 认证）----
+  // GET /api/glm-usage?hours=24 —— 回溯 N 小时的按模型 token 消耗与每小时序列
+  app.get('/api/glm-usage', async (c) => {
+    log('glm-usage request');
+    const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
+    const cfg = rctx && rctx.config;
+    const getKey = async (key) => {
+      if (!cfg) return '';
+      if (typeof cfg.get === 'function') {
+        try { const v = await cfg.get(key); return v || ''; }
+        catch (e) { return ''; }
+      }
+      return cfg[key] || (cfg.global && cfg.global[key]) || '';
+    };
+    const planKey = await getKey('glmPlanKey');
+    if (!planKey) return c.json({ ok: true, hasKey: false, message: '未配置智谱套餐 Key。' });
+
+    const hoursRaw = num(c.query.hours);
+    const hours = hoursRaw > 0 && hoursRaw <= 720 ? Math.round(hoursRaw) : 24;
+    const now = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const fmt = (d) => d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
+    const start = fmt(new Date(now.getTime() - hours * 3600000));
+    const end = fmt(now);
+    const url = GLM_MODEL_USAGE_URL + '?startTime=' + encodeURIComponent(start) + '&endTime=' + encodeURIComponent(end);
+
+    try {
+      const res = await (c.get('pluginCtx') || ctx).network.fetch(url, {
+        headers: { Authorization: planKey, 'Accept-Language': 'zh-CN,zh', 'Content-Type': 'application/json' },
+        timeoutMs: 8000,
+      });
+      log('glm-usage: status=' + res.status);
+      if (!res.ok) return c.json({ ok: false, hasKey: true, message: `智谱用量接口返回 ${res.status}` });
+      const parsed = parseGlmUsage(await res.json());
+      return c.json({ ok: true, hasKey: true, hours, startTime: start, endTime: end, ...parsed });
+    } catch (err) {
+      log('glm-usage error: ' + String(err && err.message || err));
+      return c.json({ ok: false, hasKey: true, message: String(err && err.message || err) });
+    }
   });
 
   // ---- 用量统计（本地 usage-ledger）----

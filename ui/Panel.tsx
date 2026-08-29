@@ -217,10 +217,21 @@ type PlanInfo = {
   reason?: string;
   name?: string;
   planName?: string;
-  name?: string;
-  planName?: string;
   exhausted?: boolean;
   window?: PlanWindow[];
+  message?: string;
+};
+
+type UsageInfo = {
+  ok: boolean;
+  hasKey?: boolean;
+  hours?: number;
+  startTime?: string;
+  endTime?: string;
+  totalCalls?: number;
+  totalTokens?: number;
+  summary?: { model: string; totalTokens: number }[];
+  byHour?: { time: string; tokens: number; calls: number }[];
   message?: string;
 };
 
@@ -302,6 +313,62 @@ function PlanSection({ plan }: { plan: PlanInfo | null }) {
         </div>
       )}
     </section>
+  );
+}
+
+/* ─── 套餐 API 用量区块：套餐 Key 认证，按模型 token 消耗 + 每小时柱状图 ─── */
+function UsageSection({ usage }: { usage: UsageInfo | null }) {
+  if (!usage) return null;
+  if (!usage.hasKey) return null; // 不填套餐 Key 就不显示
+  return (
+    <section style={{ marginBottom: 14 }}>
+      <SectionTitle>套餐 API 用量（近 24 小时）</SectionTitle>
+      {!usage.ok ? (
+        <div className="plan-note plan-note-fail">用量查询失败{usage.message ? '：' + usage.message : ''}</div>
+      ) : (
+        <div className="plan-card">
+          <div className="usage-totals">
+            <span className="usage-big">{fmtNum(usage.totalTokens || 0)}</span>
+            <span className="usage-unit">tokens · {usage.totalCalls || 0} 次调用</span>
+          </div>
+          {usage.summary && usage.summary.length > 0 ? (
+            <div className="usage-models">
+              {usage.summary.map((s) => (
+                <div key={s.model} className="usage-model-row">
+                  <span className="usage-model-name">{s.model}</span>
+                  <span className="usage-model-val">{fmtNum(s.totalTokens)}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {usage.byHour && usage.byHour.length > 0 ? <UsageHourChart byHour={usage.byHour} /> : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function UsageHourChart({ byHour }: { byHour: { time: string; tokens: number; calls: number }[] }) {
+  const [chartRef, w] = useWidth<HTMLDivElement>();
+  const H = 96;
+  const max = Math.max(...byHour.map((b) => b.tokens), 1);
+  const bw = w > 0 && byHour.length > 0 ? w / byHour.length : 0;
+  return (
+    <div ref={chartRef} className="usage-chart">
+      {w > 0 && bw > 0 ? (
+        <svg width={w} height={H} role="img" aria-label="每小时 token 消耗柱状图">
+          {byHour.map((b, i) => {
+            const h = b.tokens > 0 ? Math.max(2, (b.tokens / max) * (H - 20)) : 1;
+            return (
+              <rect key={b.time + i} x={i * bw + bw * 0.15} y={H - 16 - h} width={Math.max(1, bw * 0.7)} height={h} rx={2} className="usage-bar">
+                <title>{`${b.time} · ${fmtNum(b.tokens)} tok · ${b.calls} 次`}</title>
+              </rect>
+            );
+          })}
+          <line x1={0} y1={H - 16} x2={w} y2={H - 16} className="usage-baseline" />
+        </svg>
+      ) : null}
+    </div>
   );
 }
 
@@ -509,6 +576,7 @@ function Panel() {
   const isWidget = surface === 'widget';
   const [balances, setBalances] = useState<BalResult[] | null>(null);
   const [plan, setPlan] = useState<PlanInfo | null>(null);
+  const [glmUsage, setGlmUsage] = useState<UsageInfo | null>(null);
   const [usage, setUsage] = useState<any>(null);
   const [forecast, setForecast] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -544,6 +612,12 @@ function Panel() {
       .then((r) => r.json())
       .then((p) => setPlan(p))
       .catch(() => setPlan({ ok: false, message: '请求失败' }));
+    // 套餐 API 用量：未配置套餐 Key 时区块自身隐藏，失败态由区块自展示
+    hana.api
+      .fetch('api/glm-usage?hours=24')
+      .then((r) => r.json())
+      .then((u) => setGlmUsage(u))
+      .catch(() => setGlmUsage({ ok: false, hasKey: true, message: '请求失败' }));
     setLoading(false);
   }, []);
 
@@ -610,6 +684,7 @@ function Panel() {
         )}
 
         {!isWidget && <PlanSection plan={plan} />}
+      {!isWidget && <UsageSection usage={glmUsage} />}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <StatBox label="今日 Token" value={today ? fmtNum(today.tokens) : '-'} sub={today ? `${today.calls} 次调用` : ''} />

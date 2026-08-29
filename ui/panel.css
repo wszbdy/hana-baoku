@@ -408,3 +408,14 @@ body[data-surface="widget"] .plugin-panel {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(184, 134, 11, 0.15); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(184, 134, 11, 0.3); }
+/* ─── 套餐 API 用量（usage）─── */
+.usage-totals { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.usage-big { font-size: 22px; font-weight: 600; color: #b8860b; font-variant-numeric: tabular-nums; }
+.usage-unit { font-size: 12px; color: rgba(60, 52, 39, 0.55); }
+.usage-models { margin: 4px 0 8px; }
+.usage-model-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-bottom: 1px dashed rgba(218, 165, 32, 0.15); color: rgba(60, 52, 39, 0.75); }
+.usage-model-val { font-variant-numeric: tabular-nums; color: rgba(184, 134, 11, 0.9); }
+.usage-chart { margin-top: 6px; }
+.usage-bar { fill: rgba(184, 134, 11, 0.65); }
+.usage-bar:hover { fill: #b8860b; }
+.usage-baseline { stroke: #ddd2ba; stroke-width: 1; }
