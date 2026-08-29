@@ -1,6 +1,6 @@
-# 王之宝库 · Baoku Monitor
+# 王之宝库 · Hana Baoku Monitor
 
-> HanaAgent 余额与用量监控插件 —— 一个面板看全所有 AI 账户的钱。
+> [HanaAgent](https://github.com/liliMozi/openhanako)（OpenHanako）余额与套餐用量监控插件 —— 一个面板看全所有 AI 账户的钱。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
