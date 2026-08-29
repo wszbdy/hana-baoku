@@ -99,6 +99,213 @@ body[data-surface="widget"] .plugin-panel {
   color: rgba(60, 52, 39, 0.4) !important;
 }
 
+/* ─── 区块标题（金色小徽 + 楷体） ─── */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: "STKaiti", "KaiTi", serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: rgba(146, 104, 6, 0.85);
+  margin: 2px 0 8px 2px;
+}
+
+.section-title-mark {
+  width: 4px;
+  height: 13px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #daa520, #b8860b);
+  flex: none;
+}
+
+/* ─── 趋势图 ─── */
+.trend-chart-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.trend-chart-key {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  align-self: center;
+  flex: none;
+}
+
+.trend-chart-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(61, 52, 39, 0.66);
+}
+
+.trend-chart-sum {
+  margin-left: auto;
+  font-size: 11px;
+  color: rgba(61, 52, 39, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-chart-body svg:focus-visible {
+  outline: 2px solid rgba(184, 134, 11, 0.5);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ─── 图表 tooltip ─── */
+.chart-tooltip {
+  position: absolute;
+  top: 2px;
+  background: #fffefb;
+  border: 1px solid rgba(218, 165, 32, 0.25);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(120, 90, 20, 0.14);
+  padding: 5px 9px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 4;
+}
+
+.chart-tooltip-value {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #3d3427;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-tooltip-label {
+  font-size: 10.5px;
+  color: rgba(61, 52, 39, 0.5);
+  margin-top: 1px;
+}
+
+/* ─── 逐日数据表（折叠视图） ─── */
+.trend-table {
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+
+.trend-table summary {
+  cursor: pointer;
+  color: rgba(146, 104, 6, 0.7);
+  font-size: 11.5px;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.trend-table summary:hover {
+  color: #b8860b;
+}
+
+.trend-table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-table th {
+  text-align: right;
+  font-weight: 600;
+  color: rgba(61, 52, 39, 0.5);
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(218, 165, 32, 0.18);
+}
+
+.trend-table th:first-child,
+.trend-table td:first-child {
+  text-align: left;
+}
+
+.trend-table td {
+  text-align: right;
+  color: rgba(61, 52, 39, 0.72);
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(218, 165, 32, 0.07);
+}
+
+/* ─── 月度费用预测卡 ─── */
+.forecast-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(218, 165, 32, 0.14);
+  border-radius: 14px;
+  padding: 14px 16px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 8px rgba(184, 134, 11, 0.06);
+}
+
+.forecast-range {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.forecast-range-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: #3d3427;
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-range-note {
+  font-size: 11.5px;
+  color: rgba(61, 52, 39, 0.5);
+  margin-left: auto;
+}
+
+.forecast-track {
+  position: relative;
+  height: 10px;
+  border-radius: 6px;
+  background: #f3ecdd;
+  margin: 12px 0 6px;
+  overflow: hidden;
+}
+
+.forecast-track-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, #b8860b, #daa520);
+  border-radius: 6px 0 0 6px;
+  transition: width 0.4s ease;
+}
+
+.forecast-track-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(13, 148, 136, 0.22);
+  transition: left 0.4s ease, width 0.4s ease;
+}
+
+.forecast-meta {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: rgba(61, 52, 39, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+
+.forecast-method {
+  margin-top: 8px;
+  font-size: 10.5px;
+  font-style: italic;
+  color: rgba(61, 52, 39, 0.4);
+  line-height: 1.5;
+}
+
 /* ─── 滚动条 ─── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

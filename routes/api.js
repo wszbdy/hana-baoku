@@ -32,10 +32,13 @@ function num(v) {
 function isToday(ts) {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return false;
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() &&
-         d.getMonth() === now.getMonth() &&
-         d.getDate() === now.getDate();
+  return dayKey(d) === dayKey(new Date());
+}
+
+// 本地时区的 YYYY-MM-DD 日键（日聚合、近 N 天窗口都用它，与 isToday 口径一致）
+function dayKey(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
 function extractUsage(rec) {
@@ -115,18 +118,23 @@ function pricingFor(provider, modelId) {
   return null;
 }
 
+// 时间线取段：取 from <= ts 的最后一个条目（条目按 from 升序）
+function priceTableAt(pricing, ts) {
+  let table = pricing.timeline[0];
+  for (const t of pricing.timeline) {
+    if (ts >= t.from) table = t;
+    else break;
+  }
+  return table;
+}
+
 function estimateCost(rec) {
   const u = extractUsage(rec);
   const pricing = pricingFor(rec.model && rec.model.provider, rec.model && rec.model.modelId);
   if (!pricing) return 0;
   const start = Date.parse(rec.startedAt);
   if (!Number.isFinite(start)) return 0;
-  // 取时间线中最后一个 from <= start 的价格条目（条目按 from 升序）
-  let table = pricing.timeline[0];
-  for (const t of pricing.timeline) {
-    if (start >= t.from) table = t;
-    else break;
-  }
+  const table = priceTableAt(pricing, start);
   const p = isPeakBeijing(rec.startedAt) ? table.peak : table.offpeak;
   const miss = u.cacheMiss;
   return (u.cacheRead / 1e6) * p.hit + (miss / 1e6) * p.miss + (u.output / 1e6) * p.out;
@@ -263,6 +271,13 @@ export default function registerPluginUiRoutes(app, ctx) {
     const byModel = new Map();
     const stats = { today: { calls: 0, tokens: 0, cost: 0, cacheRead: 0, cacheMiss: 0 }, total: { calls: 0, tokens: 0, cost: 0, cacheRead: 0, cacheMiss: 0 } };
 
+    // 近 30 天按日聚合（本地时区日键），供趋势曲线使用
+    const TREND_DAYS = 30;
+    const dailyMap = new Map(); // dayKey -> { tokens, cost, calls }
+    const day0 = new Date();
+    day0.setHours(0, 0, 0, 0);
+    const trendStart = day0.getTime() - (TREND_DAYS - 1) * 86400000;
+
     for (const rec of data) {
       if (!rec || rec.status !== 'ok') continue;
       const model = (rec.model && (rec.model.provider || '') + '/' + (rec.model.modelId || 'unknown')) || 'unknown';
@@ -282,6 +297,16 @@ export default function registerPluginUiRoutes(app, ctx) {
       stats.total.cacheRead += u.cacheRead;
       stats.total.cacheMiss += u.cacheMiss;
 
+      const ts = Date.parse(rec.startedAt);
+      if (Number.isFinite(ts) && ts >= trendStart) {
+        const k = dayKey(new Date(ts));
+        const d = dailyMap.get(k) || { tokens: 0, cost: 0, calls: 0 };
+        d.tokens += u.totalTokens;
+        d.cost += cost;
+        d.calls += 1;
+        dailyMap.set(k, d);
+      }
+
       if (isToday(rec.startedAt)) {
         stats.today.calls += 1;
         stats.today.tokens += u.totalTokens;
@@ -296,6 +321,15 @@ export default function registerPluginUiRoutes(app, ctx) {
       return denom > 0 ? Math.round((m.cacheRead / denom) * 1000) / 10 : 0;
     };
 
+    // 生成连续 30 天序列（缺数据的天补零），旧 → 新
+    const daily = [];
+    for (let i = TREND_DAYS - 1; i >= 0; i--) {
+      const d = new Date(day0.getTime() - i * 86400000);
+      const k = dayKey(d);
+      const agg = dailyMap.get(k) || { tokens: 0, cost: 0, calls: 0 };
+      daily.push({ date: k, label: (d.getMonth() + 1) + '/' + d.getDate(), ...agg });
+    }
+
     return c.json({
       ok: true,
       estimated: true,
@@ -303,7 +337,120 @@ export default function registerPluginUiRoutes(app, ctx) {
       today: { ...stats.today, hitRate: hitRate(stats.today) },
       total: { ...stats.total, hitRate: hitRate(stats.total) },
       byModel: [...byModel.values()].map((m) => ({ ...m, hitRate: hitRate(m) })),
+      daily,
       ledgerPath: ledgerPath(),
+    });
+  });
+
+  // ---- 月度费用预测 ----
+  // 思路：不做简单「月至今日均 × 天数」外推，而是取近 N 天的日均 token 结构
+  // （命中/未命中/输出 三分量），对本月剩余每一天，把该结构按时段拆到峰/谷，
+  // 再套当天的价格时间线（自动反映调价与限时折扣），得到账单区间：
+  //   低情景 = 近 30 天日均节奏（长期习惯）
+  //   高情景 = 近 7 天日均节奏（近期加速）
+  app.get('/api/forecast', async (c) => {
+    const data = readLedger();
+    if (data.error) return c.json({ ok: false, message: data.error });
+
+    const now = new Date();
+    const day0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const daysInMonth = Math.round((monthEnd - monthStart) / 86400000);
+    const dayOfMonth = Math.round((day0 - monthStart) / 86400000) + 1; // 今天是本月第几天
+    const daysLeft = daysInMonth - dayOfMonth; // 今天之后剩余天数
+
+    // 本月至今：实际费用 + 各模型 token 三分量累计（token 结构用于外推）
+    let monthCost = 0;
+    const byModel = new Map(); // model -> { read, miss, out, cost }
+    // 近 7 / 30 天日均分量（按记录的模型归属统计）
+    const recent7 = new Map();
+    const recent30 = new Map();
+    const t7 = day0.getTime() - 6 * 86400000;
+    const t30 = day0.getTime() - 29 * 86400000;
+
+    let anyLedger = false;
+    for (const rec of data) {
+      if (!rec || rec.status !== 'ok') continue;
+      const ts = Date.parse(rec.startedAt);
+      if (!Number.isFinite(ts)) continue;
+      anyLedger = true;
+      const model = (rec.model && (rec.model.provider || '') + '/' + (rec.model.modelId || 'unknown')) || 'unknown';
+      const u = extractUsage(rec);
+      const cost = estimateCost(rec);
+
+      const parts = (m) => {
+        let e = m.get(model);
+        if (!e) { e = { read: 0, miss: 0, out: 0, cost: 0 }; m.set(model, e); }
+        return e;
+      };
+
+      if (ts >= monthStart.getTime()) {
+        monthCost += cost;
+        const e = parts(byModel);
+        e.read += u.cacheRead; e.miss += u.cacheMiss; e.out += u.output; e.cost += cost;
+      }
+      if (ts >= t7) {
+        const e = parts(recent7); e.read += u.cacheRead; e.miss += u.cacheMiss; e.out += u.output;
+      }
+      if (ts >= t30) {
+        const e = parts(recent30); e.read += u.cacheRead; e.miss += u.cacheMiss; e.out += u.output;
+      }
+    }
+
+    if (!anyLedger) {
+      return c.json({ ok: true, empty: true, message: 'usage-ledger 暂无成功记录，无法预测。' });
+    }
+
+    // 情景日均：近 7 天 / 近 30 天的每模型日均 token 分量；无数据的模型不参与外推
+    const scenarioDaily = (src, days) => {
+      const out = [];
+      for (const [model, e] of src) {
+        out.push({ model, read: e.read / days, miss: e.miss / days, out: e.out / days });
+      }
+      return out;
+    };
+    const daily7 = scenarioDaily(recent7, 7);
+    const daily30 = scenarioDaily(recent30, 30);
+
+    // 一天 24 小时（北京时间）中峰时共 7h（9-12、14-18），谷时 17h。
+    // 拆分假设：调用在全天均匀分布 → 峰时占 7/24，谷时占 17/24。
+    const PEAK_SHARE = 7 / 24;
+    const OFFPEAK_SHARE = 1 - PEAK_SHARE;
+
+    // 未来某天某模型一天的成本：日分量按峰谷拆分后套当天价格
+    const dayCost = (entry, ts) => {
+      const prov = entry.model.split('/')[0];
+      const mid = entry.model.split('/')[1] || '';
+      const pricing = pricingFor(prov, mid);
+      if (!pricing) return 0;
+      const table = priceTableAt(pricing, ts);
+      const peak = (entry.read * PEAK_SHARE / 1e6) * table.peak.hit
+        + (entry.miss * PEAK_SHARE / 1e6) * table.peak.miss
+        + (entry.out * PEAK_SHARE / 1e6) * table.peak.out;
+      const off = (entry.read * OFFPEAK_SHARE / 1e6) * table.offpeak.hit
+        + (entry.miss * OFFPEAK_SHARE / 1e6) * table.offpeak.miss
+        + (entry.out * OFFPEAK_SHARE / 1e6) * table.offpeak.out;
+      return peak + off;
+    };
+
+    let lowRemaining = 0; // 近 30 天节奏
+    let highRemaining = 0; // 近 7 天节奏
+    for (let i = 1; i <= daysLeft; i++) {
+      const ts = day0.getTime() + i * 86400000 + 12 * 3600000; // 该天正午（取价用）
+      for (const e of daily30) lowRemaining += dayCost(e, ts);
+      for (const e of daily7) highRemaining += dayCost(e, ts);
+    }
+
+    return c.json({
+      ok: true,
+      month: { year: now.getFullYear(), month: now.getMonth() + 1, days: daysInMonth, dayOfMonth, daysLeft },
+      spentToDate: monthCost,
+      projectedLow: monthCost + lowRemaining,
+      projectedHigh: monthCost + highRemaining,
+      remainingLow: lowRemaining,
+      remainingHigh: highRemaining,
+      method: '近 30 天日均节奏（低）与近 7 天日均节奏（高），按峰谷时段拆分并套价格时间线外推',
     });
   });
 
