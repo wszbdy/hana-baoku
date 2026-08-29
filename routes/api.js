@@ -8,7 +8,7 @@ const ZHIPU_BALANCE_URL = 'https://open.bigmodel.cn/api/biz/account/query-custom
 // Kimi (Moonshot) 余额接口
 const KIMI_BALANCE_URL = 'https://api.moonshot.cn/v1/users/me/balance';
 // 硅基流动用户信息接口（含余额）
-const SILICONFLOW_INFO_URL = 'https://api.siliconflow.cn/v1/user/info';
+const SILICONFLOW_INFO_URL = 'https://api.siliconflow.com/v1/user/info';
 // OpenRouter Key 信息接口（usage / limit）
 const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
 

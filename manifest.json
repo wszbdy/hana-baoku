@@ -8,7 +8,7 @@
   "trust": "full-access",
   "capabilities": ["network.fetch"],
   "network": {
-    "allowedHosts": ["api.deepseek.com", "open.bigmodel.cn", "api.moonshot.cn", "api.siliconflow.cn", "openrouter.ai"],
+    "allowedHosts": ["api.deepseek.com", "open.bigmodel.cn", "api.moonshot.cn", "api.siliconflow.cn", "api.siliconflow.com", "openrouter.ai"],
     "methods": ["GET"],
     "defaultTimeoutMs": 10000,
     "maxResponseBytes": 262144
