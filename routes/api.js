@@ -11,6 +11,8 @@ const KIMI_BALANCE_URL = 'https://api.moonshot.cn/v1/users/me/balance';
 const SILICONFLOW_INFO_URL = 'https://api.siliconflow.com/v1/user/info';
 // OpenRouter Key 信息接口（usage / limit）
 const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
+// 智谱 GLM Coding Plan 用量接口（官方 zai-coding-plugins 插件同款，国内站）
+const GLM_PLAN_QUOTA_URL = 'https://open.bigmodel.cn/api/monitor/usage/quota/limit';
 
 function hanaDataDir() {
   return process.env.HANA_HOME || path.join(os.homedir(), '.hanako');
@@ -214,6 +216,66 @@ export const balanceParsers = {
   parseOpenRouterBalance,
 };
 
+// ---- 套餐（Plan）用量解析（纯函数）----
+// 智谱 quota/limit 响应（官方 zai-coding-plugins 与 CodexBar 交叉验证）：
+//   { success, code, msg, data: { planName, limits: [{
+//       type: 'TOKENS_LIMIT' | 'TIME_LIMIT' | 'CREDIT_LIMIT',
+//       unit: 1天|3小时|5分钟|6周, number: 数量, percentage: 已用百分比,
+//       usage: 总额度, currentValue: 已用, remaining: 剩余,
+//       nextResetTime: 重置时间(epoch ms), usageDetails: [...] }] } }
+//   TOKENS_LIMIT 会出现多条：最短的是 5h 窗，最长的是周额度；TIME_LIMIT 是 MCP 通道（不进窗口）。
+const PLAN_UNIT_MINUTES = { 1: 1440, 3: 60, 5: 1, 6: 10080 };
+
+function parseGlmPlanQuota(data) {
+  // 业务错误响应：积分耗尽做优雅降级（exhausted），其余抛错
+  if (data && data.code && data.code !== 200) {
+    const msg = String(data.msg || data.message || '');
+    if (/耗尽|用尽|exhaust|insufficient|欠费/i.test(msg)) {
+      return { exhausted: true, planName: '', windows: [] };
+    }
+    throw new Error(msg || '智谱套餐用量查询失败');
+  }
+  const d = (data && data.data) || {};
+  const limits = d.limits;
+  if (!Array.isArray(limits)) throw new Error('智谱套餐响应缺少 limits 字段');
+  if (limits.length === 0) return { exhausted: false, planName: d.planName || '', windows: [] };
+
+  const windows = [];
+  for (const raw of limits) {
+    if (!raw || typeof raw !== 'object') continue;
+    // TIME_LIMIT 是 MCP 用量通道，不属于 Coding Plan token 窗口
+    if (raw.type !== 'TOKENS_LIMIT' && raw.type !== 'CREDIT_LIMIT') continue;
+    const total = num(raw.usage);
+    const remaining = raw.remaining != null ? num(raw.remaining) : null;
+    const current = raw.currentValue != null ? num(raw.currentValue) : null;
+    // 已用值口径与 CodexBar 一致：优先 total-remaining（与 currentValue 取大），回落 currentValue
+    let used = null;
+    if (total > 0 && remaining != null) used = Math.max(total - remaining, current != null ? current : total - remaining);
+    else if (current != null) used = current;
+    const windowMinutes = num(raw.number) > 0 && PLAN_UNIT_MINUTES[raw.unit] ? num(raw.number) * PLAN_UNIT_MINUTES[raw.unit] : null;
+    const type = windowMinutes === 300 ? '5h'
+      : windowMinutes === 10080 ? 'weekly'
+      : windowMinutes != null ? Math.round(windowMinutes / 60) + 'h'
+      : 'unknown';
+    let percent = used != null && total > 0 ? (used / total) * 100 : num(raw.percentage);
+    percent = Math.max(0, Math.min(100, Math.round(percent * 10) / 10));
+    windows.push({
+      type,
+      windowMinutes,
+      used: used != null ? used : null,
+      total: total > 0 ? total : null,
+      percent,
+      resetAt: raw.nextResetTime != null ? num(raw.nextResetTime) : null,
+    });
+  }
+  // 按窗口时长升序：5h 在前、周额度在后
+  windows.sort((a, b) => (a.windowMinutes ?? Infinity) - (b.windowMinutes ?? Infinity));
+  return { exhausted: false, planName: d.planName || '', windows };
+}
+
+// 供 mock 自验使用
+export const planParsers = { parseGlmPlanQuota };
+
 // ---- 余额供应商注册表：每家一个 adapter（端点 + 头 + 解析），新增平台只需追加一条 ----
 // query(env) 返回 null 表示「未配置 key，跳过」；{ ok, ... } 为查询结果；throw 由路由层兜底为 ok:false
 const BALANCE_PROVIDERS = [
@@ -301,6 +363,46 @@ const BALANCE_PROVIDERS = [
   },
 ];
 
+// ---- 套餐用量供应商注册表（与 BALANCE_PROVIDERS 同模式）----
+// 目前只实装智谱 GLM Coding Plan；未来新厂商（如 MiMo Token Plan 的 tp- key 体系，
+// 暂无公开用量接口）在此追加条目即可，路由层与前端卡片是通用的。
+// query(env) 约定与余额 adapter 一致：null=未配置跳过；{ ok, ... }=结果；throw=路由层兜底。
+const PLAN_PROVIDERS = [
+  {
+    id: 'glm', name: '智谱 GLM Coding Plan',
+    keys: ['glmAccessToken', 'glmOrgId', 'glmProjectId'],
+    async query(env) {
+      const [token, org, project] = await Promise.all([
+        env.getKey('glmAccessToken'), env.getKey('glmOrgId'), env.getKey('glmProjectId'),
+      ]);
+      if (!token || !org || !project) return null;
+      const headers = {
+        Authorization: token,
+        'Bigmodel-Organization': org,
+        'Bigmodel-Project': project,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
+      const call = (url) => env.fetch(url, { headers, timeoutMs: 8000 });
+      // 先按控制台默认形态请求；limits 为空可能是 scope 问题（CodexBar 文档：缺选择器时返回空限额），
+      // 回落 team scope（?type=2）再试一次，仍空则维持原结果（视为未订阅套餐）
+      let res = await call(GLM_PLAN_QUOTA_URL);
+      if (!res.ok) return { ok: false, message: `智谱套餐接口返回 ${res.status}` };
+      let parsed = parseGlmPlanQuota(await res.json());
+      if (parsed.windows.length === 0 && !parsed.exhausted) {
+        try {
+          const retry = await call(GLM_PLAN_QUOTA_URL + '?type=2');
+          if (retry.ok) {
+            const r2 = parseGlmPlanQuota(await retry.json());
+            if (r2.windows.length > 0 || r2.exhausted) parsed = r2;
+          }
+        } catch (e) { /* 回落失败维持原结果 */ }
+      }
+      return { ok: true, ...parsed };
+    },
+  },
+];
+
 export default function registerPluginUiRoutes(app, ctx) {
   const log = (msg) => { try { if (ctx && ctx.log) ctx.log.info('[dsum] ' + msg); } catch (e) {} };
 
@@ -341,6 +443,43 @@ export default function registerPluginUiRoutes(app, ctx) {
 
     const list = results.filter(Boolean);
     return c.json({ ok: true, configured: list.length, results: list });
+  });
+
+  // ---- 套餐（Plan）用量：当前实装智谱 GLM Coding Plan，按 PLAN_PROVIDERS 逐家查询 ----
+  app.get('/api/glm-plan', async (c) => {
+    log('glm-plan request');
+    const getKey = makeKeyGetter(c);
+    const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
+    const fetcher = rctx && rctx.network && rctx.network.fetch;
+    if (!fetcher) return c.json({ ok: false, message: '宿主未提供 network.fetch 能力' });
+
+    const provider = PLAN_PROVIDERS.find((p) => p.id === 'glm');
+    let r;
+    try {
+      r = await provider.query({ getKey, fetch: fetcher, log });
+    } catch (err) {
+      return c.json({ ok: false, message: String(err && err.message || err) });
+    }
+    if (!r) {
+      return c.json({ ok: true, hasPlan: false, reason: 'needKey', message: '未配置智谱 GLM 登录态（access_token / 组织ID / 项目ID）' });
+    }
+    if (!r.ok) {
+      return c.json({ ok: false, hasPlan: true, name: provider.name, message: r.message });
+    }
+    // 窗口为空且非「积分耗尽」→ 视为当前账号未订阅套餐
+    if (!r.exhausted && (!r.windows || r.windows.length === 0)) {
+      return c.json({ ok: true, hasPlan: false, reason: 'noPlan', message: '当前账号未查询到 Coding Plan 用量（可能未订阅）', planName: r.planName || '' });
+    }
+    log('glm-plan: ok, windows=' + r.windows.length + (r.exhausted ? ' (exhausted)' : ''));
+    return c.json({
+      ok: true,
+      hasPlan: true,
+      name: provider.name,
+      planName: r.planName || '',
+      exhausted: !!r.exhausted,
+      window: r.windows, // [{ type:'5h'|'weekly'|..., used, total, percent, resetAt }]
+      message: r.exhausted ? '套餐积分已用尽' : '',
+    });
   });
 
   // ---- 用量统计（本地 usage-ledger）----

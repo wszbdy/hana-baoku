@@ -202,6 +202,107 @@ function BalanceCard({ r }: { r: BalResult }) {
   );
 }
 
+/* ─── 套餐（Plan）用量区块：GLM Coding Plan 的 5h / 周额度进度条 ─── */
+type PlanWindow = {
+  type: string;
+  used: number | null;
+  total: number | null;
+  percent: number;
+  resetAt: number | null;
+};
+
+type PlanInfo = {
+  ok: boolean;
+  hasPlan?: boolean;
+  reason?: string;
+  name?: string;
+  planName?: string;
+  exhausted?: boolean;
+  window?: PlanWindow[];
+  message?: string;
+};
+
+const PLAN_TYPE_LABEL: Record<string, string> = {
+  '5h': '5 小时窗口',
+  weekly: '周额度',
+};
+
+// meter 填充色随用量分级：<80% 金、80–95% 琥珀、≥95% 红（严重度语义）
+function planFill(pct: number) {
+  if (pct >= 95) return '#b91c1c';
+  if (pct >= 80) return '#b45309';
+  return 'linear-gradient(90deg, #b8860b, #daa520)';
+}
+
+function fmtReset(ts: number | null) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const hm = p(d.getHours()) + ':' + p(d.getMinutes());
+  return (sameDay ? '' : d.getMonth() + 1 + '/' + d.getDate() + ' ') + hm;
+}
+
+function PlanWindowBar({ w }: { w: PlanWindow }) {
+  const pct = Math.max(0, Math.min(100, Number(w.percent) || 0));
+  const label = PLAN_TYPE_LABEL[w.type] || w.type;
+  const usedStr = w.used != null ? fmtNum(w.used) : null;
+  const totalStr = w.total != null ? fmtNum(w.total) : null;
+  const ratio = usedStr && totalStr ? `${usedStr} / ${totalStr}` : '';
+  const reset = fmtReset(w.resetAt);
+
+  return (
+    <div className="plan-window">
+      <div className="plan-window-head">
+        <span className="plan-window-label">{label}</span>
+        <span className="plan-window-ratio">
+          {ratio ? ratio + ' · ' : ''}
+          {pct}%
+        </span>
+      </div>
+      <div
+        className="plan-track"
+        role="img"
+        aria-label={`${label}：已用 ${pct}%${ratio ? '（' + ratio + '）' : ''}${reset ? '，重置于 ' + reset : ''}`}
+      >
+        <div className="plan-track-fill" style={{ width: pct + '%', background: planFill(pct) }} />
+      </div>
+      {reset ? <div className="plan-window-reset">重置于 {reset}</div> : null}
+    </div>
+  );
+}
+
+function PlanSection({ plan }: { plan: PlanInfo | null }) {
+  if (!plan) return null;
+  return (
+    <section style={{ marginBottom: 14 }}>
+      <SectionTitle>套餐用量</SectionTitle>
+      {!plan.ok ? (
+        <div className="plan-note plan-note-fail">GLM Coding Plan 查询失败{plan.message ? '：' + plan.message : ''}</div>
+      ) : !plan.hasPlan ? (
+        plan.reason === 'needKey' ? (
+          <div className="balance-guide">
+            未配置智谱 GLM 登录态 —— 在插件设置中填写 access_token / 组织ID / 项目ID 后点刷新，即可查看 GLM Coding Plan 的 5 小时与周额度用量。
+          </div>
+        ) : (
+          <div className="plan-note">{plan.message || '当前账号未查询到套餐用量'}</div>
+        )
+      ) : plan.exhausted ? (
+        <div className="plan-note plan-note-exhausted">套餐积分已用尽，等待额度重置</div>
+      ) : (
+        <div className="plan-card">
+          {plan.planName ? <div className="plan-name">{plan.planName}</div> : null}
+          {(plan.window || []).map((w, i) => (
+            <PlanWindowBar key={w.type + i} w={w} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <div className="section-title">
@@ -405,6 +506,7 @@ function Panel() {
   const surface = document.getElementById('root')?.dataset.surface || 'page';
   const isWidget = surface === 'widget';
   const [balances, setBalances] = useState<BalResult[] | null>(null);
+  const [plan, setPlan] = useState<PlanInfo | null>(null);
   const [usage, setUsage] = useState<any>(null);
   const [forecast, setForecast] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -434,6 +536,12 @@ function Panel() {
         else if (b && b.message) setError('余额：' + b.message);
       })
       .catch(() => setError('余额查询失败'));
+    // 套餐用量：失败态由区块自己展示，不阻塞主面板
+    hana.api
+      .fetch('api/glm-plan')
+      .then((r) => r.json())
+      .then((p) => setPlan(p))
+      .catch(() => setPlan({ ok: false, message: '请求失败' }));
     setLoading(false);
   }, []);
 
@@ -453,7 +561,7 @@ function Panel() {
       } catch (e) { /* 忽略：宿主不支持 resize 时保持初始高度 */ }
     });
     return () => cancelAnimationFrame(raf);
-  }, [isWidget, usage, forecast, balances, error]);
+  }, [isWidget, usage, forecast, balances, plan, error]);
 
   const rows: any[] = ((usage && usage.byModel) || []).slice().sort((a: any, b: any) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0));
   const today = usage && usage.today;
@@ -498,6 +606,8 @@ function Panel() {
             ))}
           </div>
         )}
+
+        {!isWidget && <PlanSection plan={plan} />}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <StatBox label="今日 Token" value={today ? fmtNum(today.tokens) : '-'} sub={today ? `${today.calls} 次调用` : ''} />
