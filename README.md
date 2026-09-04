@@ -6,8 +6,9 @@
 
 ## 功能
 
-- **五平台余额聚合**：DeepSeek / 智谱 GLM / Kimi (Moonshot) / 硅基流动 / OpenRouter。填了 key 自动显示，没填自动隐藏，单家失败不拖垮其他家
-- **套餐用量仪表**：GLM Coding Plan 的 5 小时 / 周额度进度条，用量分级变色（金 → 琥珀 → 红），积分耗尽优雅提示
+- **七平台余额聚合**：DeepSeek / 智谱 GLM / Kimi (Moonshot) / 硅基流动 / OpenRouter / 阶跃 StepFun / Novita AI。填了 key 自动显示，没填自动隐藏，单家失败不拖垮其他家
+- **套餐用量仪表**：智谱 GLM Coding Plan 与 MiniMax Token Plan 的 5 小时 / 周额度进度条，用量分级变色（金 → 琥珀 → 红），积分耗尽优雅提示
+- **错误二分 + keep-last-good**：失败按「凭证无效 / 欠费耗尽 / 网络瞬时」三类定性展示，分别对待；瞬时故障自动重试；查询失败时显示上次成功数据与「数据截至」时间角标，不再空白报错
 - **套餐 API 用量**：接入智谱 `monitor/usage` 接口家族，按模型 token 消耗汇总 + 每小时消耗柱状图（纯 SVG）
 - **30 天趋势**：token / 费用日曲线，悬浮读数 + 键盘可访问
 - **月度费用预测**：近 7 天 / 近 30 天双情景外推，峰谷时段拆分 × 价格时间线，输出本月账单区间
@@ -22,6 +23,9 @@
 | Kimi (Moonshot) | ✅ | — | API Key |
 | 硅基流动 | ✅* | — | API Key（*国内账号余额接口官方迁移中暂未开放）|
 | OpenRouter | ✅ | — | API Key |
+| 阶跃 StepFun | ✅ | — | API Key |
+| Novita AI | ✅ | — | API Key（USD 计价）|
+| MiniMax | — | ✅ Token Plan（5h 滚动窗 + 周窗） | **Subscription Key**（Billing > Token Plan 页获取；pay-as-you-go API Key 查不了此接口）|
 
 ## 安装
 
@@ -48,6 +52,9 @@ npm run build:ui
 | `siliconflowApiKey` | 硅基流动 API Key（`sk-` 开头）|
 | `openrouterApiKey` | OpenRouter API Key（`sk-or-` 开头）|
 | `glmPlanKey` | 智谱套餐 Key（Claude Code 的 `ANTHROPIC_AUTH_TOKEN`），仅用于用量查询 |
+| `stepfunApiKey` | 阶跃 StepFun API Key，用于查询余额 |
+| `novitaApiKey` | Novita AI API Key，用于查询余额（美元计价）|
+| `minimaxSubscriptionKey` | MiniMax Subscription Key（Token Plan 页获取），用于套餐 5h / 周窗口用量查询 |
 
 ## 费用估算口径
 
@@ -63,8 +70,9 @@ npm run build:ui
 
 ```
 manifest.json   插件元数据、能力声明、配置项
-routes/api.js   后端路由：余额聚合 / 套餐额度 / API 用量 / 用量统计 / 费用预测 / 价格时间线
+routes/api.js   后端路由：余额聚合 / 套餐额度聚合 / API 用量 / 用量统计 / 费用预测 / 价格时间线
 routes/ui.js    iframe 壳与静态资源路由
+tools/          agent 工具（baoku_balance / baoku_plan / baoku_usage）+ parser 自验脚本
 ui/Panel.tsx    React 面板（余额卡片流 / 套餐进度条 / SVG 图表）
 ui/panel.css    样式（金/米色系，tabular-nums，CVD 友好配色验证）
 ```
