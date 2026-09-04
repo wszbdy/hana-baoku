@@ -17,5 +17,5 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["ui", "vite.config.ts"]
+  "include": ["ui"]
 }

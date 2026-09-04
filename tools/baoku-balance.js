@@ -6,7 +6,7 @@ const P = balanceParsers;
 
 export const name = 'baoku_balance';
 export const description =
-  '查询王之宝库支持的全部平台账户余额（DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter）。' +
+  '查询王之宝库支持的全部平台账户余额（DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter / 阶跃 StepFun / Novita AI）。' +
   '只查询已在插件设置中配置凭证的平台；未配置的平台自动跳过。返回每家余额与人话摘要。';
 export const parameters = { type: 'object', properties: {} };
 export const sessionPermission = { readOnly: true };
@@ -113,6 +113,36 @@ export async function execute(input, toolCtx) {
       }
     }
   } catch (e) { push(`OpenRouter：查询失败（${e.message}）`); failCount++; }
+
+  // 阶跃 StepFun
+  try {
+    const k = await getKey('stepfunApiKey');
+    if (!k) { skipCount++; }
+    else {
+      const r = await fetchJson('https://api.stepfun.com/v1/accounts', { Authorization: `Bearer ${k}`, Accept: 'application/json' });
+      if (!r.ok) { push(`阶跃 StepFun：查询失败（HTTP ${r.status}）`); failCount++; }
+      else {
+        const p = P.parseStepfunBalance(r.json);
+        push(`阶跃 StepFun：余额 ¥${p.balance.total.toFixed(2)}（现金 ${p.balance.cash.toFixed(2)} + 代金券 ${p.balance.voucher.toFixed(2)}）`);
+        okCount++;
+      }
+    }
+  } catch (e) { push(`阶跃 StepFun：查询失败（${e.message}）`); failCount++; }
+
+  // Novita AI（availableBalance 精度 0.0001 USD，parser 内已除 10000）
+  try {
+    const k = await getKey('novitaApiKey');
+    if (!k) { skipCount++; }
+    else {
+      const r = await fetchJson('https://api.novita.ai/v3/user/balance', { Authorization: `Bearer ${k}`, Accept: 'application/json' });
+      if (!r.ok) { push(`Novita AI：查询失败（HTTP ${r.status}）`); failCount++; }
+      else {
+        const p = P.parseNovitaBalance(r.json);
+        push(`Novita AI：可用 $${p.balance.total.toFixed(4)}（现金 $${p.balance.cash.toFixed(4)}，信用额度 $${p.balance.creditLimit.toFixed(2)}）`);
+        okCount++;
+      }
+    }
+  } catch (e) { push(`Novita AI：查询失败（${e.message}）`); failCount++; }
 
   const summary = skipCount > 0
     ? `${okCount} 家查询成功，${failCount} 家失败，${skipCount} 家未配置已跳过。`

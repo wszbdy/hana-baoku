@@ -2,6 +2,21 @@
 
 所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循语义化版本。
 
+## [0.9.0] - 2026-09-04
+
+- **错误二分法**（借鉴 cc-switch 的语义区分）：查询失败按 `kind` 分类 ——
+  `auth`（凭证无效/登录态过期，提示去修）、`exhausted`（欠费/额度耗尽，含 DeepSeek `is_available:false`）、
+  `transient`（网络/超时/限流/5xx，可自动重试）；前端卡片与套餐区块按类渲染文案
+- **keep-last-good 快照**：查询失败时返回上次成功数据 + `数据截至 HH:mm` 角标（琥珀色），不再空白报错
+- **瞬时故障自动重试**：网络异常/超时/429/5xx 延迟 1.2s 重试一次，结论性失败（401/403/402）不重试
+- **新增厂商**（对齐 cc-switch 支持范围）：
+  - 阶跃 StepFun 余额（`/v1/accounts`，CNY，balance 字符串/数字兼容）
+  - Novita AI 余额（`/v3/user/balance`，USD，availableBalance 精度 0.0001 需除 10000）
+  - MiniMax Token Plan 套餐用量（`/v1/token_plan/remains`，Subscription Key，5h 滚动窗 + 周窗）
+- 套餐路由重构：新增聚合入口 `GET /api/plans`，`/api/glm-plan` 兼容保留（旧调用方不受影响）
+- 新增配置项：`stepfunApiKey` / `novitaApiKey` / `minimaxSubscriptionKey`；白名单加 `api.stepfun.com` / `api.novita.ai` / `api.minimax.io` / `api.minimaxi.com`
+- 新增 parser 自验脚本 `tools/test-parsers.mjs`（12 用例）；tsconfig 排除 `vite.config.ts` 修复既存 typecheck 报错
+
 ## [0.8.0] - 2026-08-29
 
 - **新增 agent 工具三件套**（readOnly，全 agent 可调用）：

@@ -139,31 +139,56 @@ function StatBox({ label, value, sub, big }: { label: string; value: React.React
   );
 }
 
-/* ─── 余额供应商卡片：按各家响应结构渲染主值 + 副行；失败态显示错误信息 ─── */
+/* ─── 余额供应商卡片：按各家响应结构渲染主值 + 副行；失败态按 kind 分类展示，持有缓存时显示旧值 ─── */
 type BalResult = {
   id: string;
   name: string;
   currency: string;
   ok: boolean;
+  kind?: 'auth' | 'exhausted' | 'transient';
   available?: boolean;
   balance?: any;
   message?: string;
+  lastGood?: { data: BalResult; fetchedAt: number };
 };
+
+// 错误二分文案（与后端 kind 对应）：结论性失败提示去修，瞬时失败提示重试
+const BAL_KIND_LABEL: Record<string, string> = {
+  auth: '凭证无效或已过期',
+  exhausted: '欠费 / 额度耗尽',
+  transient: '网络或服务异常',
+};
+
+function fmtHm(ts: number) {
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes());
+}
 
 function BalanceCard({ r }: { r: BalResult }) {
   let value: React.ReactNode = '-';
   let sub: React.ReactNode = '';
   let fail = false;
-  const b = r.balance;
+  let stale = false;
+  // 查询失败但持有上次成功快照：渲染旧值 + 数据截至时间（keep-last-good）
+  const lg = !r.ok ? r.lastGood : undefined;
+  const eff = lg ? lg.data : r;
+  const b = eff && eff.balance;
 
   if (!r.ok) {
     fail = true;
-    sub = '查询失败' + (r.message ? '：' + r.message : '');
-  } else if (b) {
+    stale = !!lg;
+    if (!lg) {
+      const kindLabel = BAL_KIND_LABEL[r.kind || ''] || '查询失败';
+      sub = kindLabel + (r.message ? '：' + r.message : '');
+    }
+  }
+  if ((r.ok || lg) && b) {
     switch (r.id) {
       case 'deepseek':
         value = fmtMoney(b.total);
-        sub = `赠送 ${fmtMoney(b.granted)} · 充值 ${fmtMoney(b.toppedUp)}` + (r.available === false ? ' · API 欠费不可用' : '');
+        sub = `赠送 ${fmtMoney(b.granted)} · 充值 ${fmtMoney(b.toppedUp)}` + (eff.available === false ? ' · API 欠费不可用' : '');
         break;
       case 'glm':
         value = fmtMoney(b.total);
@@ -186,17 +211,36 @@ function BalanceCard({ r }: { r: BalResult }) {
           sub = `额度 ${fmtMoney(b.limit, '$')} · 已用 ${fmtMoney(b.used, '$')}` + (b.freeTier ? ' · 免费层' : '');
         }
         break;
+      case 'stepfun':
+        value = fmtMoney(b.total);
+        sub = `现金 ${fmtMoney(b.cash)} · 代金券 ${fmtMoney(b.voucher)}`;
+        break;
+      case 'novita':
+        value = fmtMoney(b.total, '$');
+        sub = `现金 ${fmtMoney(b.cash, '$')} · 信用额度 ${fmtMoney(b.creditLimit, '$')}`;
+        break;
       default:
         value = '-';
     }
+    if (stale && lg) sub = (sub ? sub + ' · ' : '') + '数据截至 ' + fmtHm(lg.fetchedAt) + '（本次查询失败）';
   }
 
+  const conclFail = fail && !stale; // 无缓存的失败：结论性/瞬时错误红字提示
   return (
-    <div style={{ ...statBoxStyle, ...(fail ? { borderColor: 'rgba(200, 80, 60, 0.25)' } : null) }}>
+    <div style={{
+      ...statBoxStyle,
+      ...(conclFail ? { borderColor: 'rgba(200, 80, 60, 0.25)' } : null),
+      ...(stale ? { borderColor: 'rgba(180, 120, 40, 0.35)' } : null),
+    }}>
       <div style={statLabelStyle}>{r.name}</div>
-      <div style={{ ...statValueStyle, ...(fail ? { color: 'rgba(160, 90, 74, 0.75)' } : null) }}>{value}</div>
+      <div style={{ ...statValueStyle, ...(conclFail ? { color: 'rgba(160, 90, 74, 0.75)' } : null) }}>{value}</div>
       {sub ? (
-        <div style={{ ...statSubStyle, ...(fail ? { color: 'rgba(160, 90, 74, 0.65)' } : null), lineHeight: 1.4 }}>{sub}</div>
+        <div style={{
+          ...statSubStyle,
+          ...(conclFail ? { color: 'rgba(160, 90, 74, 0.65)' } : null),
+          ...(stale ? { color: 'rgba(150, 110, 50, 0.85)' } : null),
+          lineHeight: 1.4,
+        }}>{sub}</div>
       ) : null}
     </div>
   );
@@ -212,14 +256,18 @@ type PlanWindow = {
 };
 
 type PlanInfo = {
+  id?: string;
   ok: boolean;
   hasPlan?: boolean;
   reason?: string;
   name?: string;
   planName?: string;
   exhausted?: boolean;
-  window?: PlanWindow[];
+  window?: PlanWindow[];  // 旧 /api/glm-plan 单路由字段
+  windows?: PlanWindow[]; // 新 /api/plans 聚合字段
+  kind?: string;
   message?: string;
+  lastGood?: { data: PlanInfo; fetchedAt: number };
 };
 
 type UsageInfo = {
@@ -287,31 +335,41 @@ function PlanWindowBar({ w }: { w: PlanWindow }) {
   );
 }
 
-function PlanSection({ plan }: { plan: PlanInfo | null }) {
-  if (!plan) return null;
+function PlanSection({ plan }: { plan: PlanInfo }) {
+  // 查询失败但持有上次成功快照：提示后仍渲染旧进度条（keep-last-good）
+  const lg = !plan.ok ? plan.lastGood : undefined;
+  const eff = lg ? lg.data : plan;
+  const windows = ((eff && (eff.windows || eff.window)) || []) as PlanWindow[];
+  const kindNote = plan.kind === 'auth' ? '（凭证无效或已过期）' : plan.kind === 'exhausted' ? '（欠费 / 额度耗尽）' : '';
   return (
     <section style={{ marginBottom: 14 }}>
       <SectionTitle>套餐用量{plan.name ? ' · ' + plan.name : ''}</SectionTitle>
       {!plan.ok ? (
-        <div className="plan-note plan-note-fail">GLM Coding Plan 查询失败{plan.message ? '：' + plan.message : ''}</div>
+        <div className="plan-note plan-note-fail">
+          套餐查询失败{kindNote}{plan.message ? '：' + plan.message : ''}
+          {lg ? ' —— 下方为上次成功数据' : ''}
+        </div>
       ) : !plan.hasPlan ? (
         plan.reason === 'needKey' ? (
           <div className="balance-guide">
-            未配置智谱 GLM 登录态 —— 在插件设置中填写 access_token / 组织ID / 项目ID 后点刷新，即可查看 GLM Coding Plan 的 5 小时与周额度用量。
+            {plan.id === 'minimax'
+              ? '未配置 MiniMax Subscription Key —— 在插件设置中填写（MiniMax 平台 Billing > Token Plan 页获取；注意不是 pay-as-you-go 的 API Key），即可查看 Token Plan 的 5 小时与周窗口用量。'
+              : '未配置智谱 GLM 登录态 —— 在插件设置中填写 access_token / 组织ID / 项目ID 后点刷新，即可查看 GLM Coding Plan 的 5 小时与周额度用量。'}
           </div>
         ) : (
           <div className="plan-note">{plan.message || '当前账号未查询到套餐用量'}</div>
         )
       ) : plan.exhausted ? (
         <div className="plan-note plan-note-exhausted">套餐积分已用尽，等待额度重置</div>
-      ) : (
+      ) : null}
+      {(!plan.ok && lg) || (plan.ok && plan.hasPlan && !plan.exhausted) ? (
         <div className="plan-card">
-          {plan.planName ? <div className="plan-name">{plan.planName}</div> : null}
-          {(plan.window || []).map((w, i) => (
+          {eff.planName ? <div className="plan-name">{eff.planName}</div> : null}
+          {windows.map((w, i) => (
             <PlanWindowBar key={w.type + i} w={w} />
           ))}
         </div>
-      )}
+      ) : null}
     </section>
   );
 }
@@ -575,7 +633,7 @@ function Panel() {
   const surface = document.getElementById('root')?.dataset.surface || 'page';
   const isWidget = surface === 'widget';
   const [balances, setBalances] = useState<BalResult[] | null>(null);
-  const [plan, setPlan] = useState<PlanInfo | null>(null);
+  const [plans, setPlans] = useState<PlanInfo[] | null>(null);
   const [glmUsage, setGlmUsage] = useState<UsageInfo | null>(null);
   const [usage, setUsage] = useState<any>(null);
   const [forecast, setForecast] = useState<any>(null);
@@ -606,12 +664,12 @@ function Panel() {
         else if (b && b.message) setError('余额：' + b.message);
       })
       .catch(() => setError('余额查询失败'));
-    // 套餐用量：失败态由区块自己展示，不阻塞主面板
+    // 套餐用量：聚合所有已配置平台（智谱 GLM / MiniMax），失败态由各区块自展示，不阻塞主面板
     hana.api
-      .fetch('api/glm-plan')
+      .fetch('api/plans')
       .then((r) => r.json())
-      .then((p) => setPlan(p))
-      .catch(() => setPlan({ ok: false, message: '请求失败' }));
+      .then((p) => setPlans((p && p.results) || []))
+      .catch(() => setPlans([{ id: 'glm', ok: false, message: '请求失败' }]));
     // 套餐 API 用量：未配置套餐 Key 时区块自身隐藏，失败态由区块自展示
     hana.api
       .fetch('api/glm-usage?hours=24')
@@ -637,7 +695,7 @@ function Panel() {
       } catch (e) { /* 忽略：宿主不支持 resize 时保持初始高度 */ }
     });
     return () => cancelAnimationFrame(raf);
-  }, [isWidget, usage, forecast, balances, plan, error]);
+  }, [isWidget, usage, forecast, balances, plans, error]);
 
   const rows: any[] = ((usage && usage.byModel) || []).slice().sort((a: any, b: any) => (Number(b.tokens) || 0) - (Number(a.tokens) || 0));
   const today = usage && usage.today;
@@ -672,8 +730,8 @@ function Panel() {
         <SectionTitle>平台余额</SectionTitle>
         {balances === null ? null : balances.length === 0 ? (
           <div className="balance-guide">
-            尚未配置任何平台的密钥 —— 在插件设置中填写 DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter
-            的 Key 后点刷新，余额卡片会自动出现。
+            尚未配置任何平台的密钥 —— 在插件设置中填写 DeepSeek / 智谱 GLM / Kimi / 硅基流动 / OpenRouter / 阶跃 StepFun / Novita AI
+            的 Key 后点刷新，余额卡片会自动出现；套餐用量支持智谱 GLM 与 MiniMax（Subscription Key）。
           </div>
         ) : (
           <div style={{ display: 'flex', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -683,7 +741,7 @@ function Panel() {
           </div>
         )}
 
-        {!isWidget && <PlanSection plan={plan} />}
+        {!isWidget && (plans || []).map((p) => <PlanSection key={p.id || p.name} plan={p} />)}
       {!isWidget && <UsageSection usage={glmUsage} />}
 
         <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>

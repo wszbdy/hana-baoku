@@ -11,6 +11,13 @@ const KIMI_BALANCE_URL = 'https://api.moonshot.cn/v1/users/me/balance';
 const SILICONFLOW_INFO_URL = 'https://api.siliconflow.com/v1/user/info';
 // OpenRouter Key 信息接口（usage / limit）
 const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
+// 阶跃 StepFun 账户余额接口（OpenAI 兼容风格 /v1/accounts，Bearer key）
+const STEPFUN_ACCOUNTS_URL = 'https://api.stepfun.com/v1/accounts';
+// Novita AI 用户余额接口（availableBalance 精度 0.0001 USD，需除以 10000）
+const NOVITA_BALANCE_URL = 'https://api.novita.ai/v3/user/balance';
+// MiniMax Token Plan 用量接口：必须 Subscription Key（Billing > Token Plan），
+// pay-as-you-go API Key 会 401/403；域名 minimax.io / minimaxi.com 同一后端
+const MINIMAX_PLAN_REMAINS_URL = 'https://api.minimax.io/v1/token_plan/remains';
 // 智谱 GLM Coding Plan 用量接口（官方 zai-coding-plugins 插件同款，国内站）
 const GLM_PLAN_QUOTA_URL = 'https://open.bigmodel.cn/api/monitor/usage/quota/limit';
 // 官方 glm-plan-usage 插件源码（zai-org/zai-coding-plugins）确认的用量监控接口家族：
@@ -170,7 +177,13 @@ function parseDeepSeekBalance(data) {
 
 // 智谱 GLM: { code, msg, data: { balance, availableBalance, rechargeAmount, giveAmount } }
 function parseGlmBalance(data) {
-  if (data && data.code && data.code !== 200) throw new Error(data.msg || '智谱余额查询失败');
+  if (data && data.code && data.code !== 200) {
+    const msg = String(data.msg || '智谱余额查询失败');
+    const err = new Error(msg);
+    // 登录态过期/无效：结论性失败，提示重新抓取而非重试
+    if (/过期|失效|invalid|登录|auth/i.test(msg)) err.kind = 'auth';
+    throw err;
+  }
   const inner = (data && data.data) || {};
   const total = num(inner.balance != null ? inner.balance : inner.availableBalance);
   return {
@@ -210,6 +223,28 @@ function parseOpenRouterBalance(data) {
   return { balance: { unlimited: false, used, limit, remaining: limit - used, freeTier: !!d.is_free_tier } };
 }
 
+// 阶跃 StepFun: { object, type, balance, total_cash_balance, total_voucher_balance }
+// balance 官方为数字，历史版本可能回字符串，做兼容
+function parseStepfunBalance(data) {
+  if (!data || data.balance == null) throw new Error((data && (data.message || data.msg)) || '阶跃响应缺少 balance 字段');
+  return {
+    balance: { total: num(data.balance), cash: num(data.total_cash_balance), voucher: num(data.total_voucher_balance) },
+  };
+}
+
+// Novita AI: { availableBalance, cashBalance, creditLimit, outstandingInvoices }
+// availableBalance 精度 0.0001 USD，原始值除以 10000；同族字段同精度
+function parseNovitaBalance(data) {
+  if (!data || data.availableBalance == null) throw new Error((data && (data.message || data.msg)) || 'Novita 响应缺少 availableBalance 字段');
+  return {
+    balance: {
+      total: num(data.availableBalance) / 10000,
+      cash: num(data.cashBalance) / 10000,
+      creditLimit: num(data.creditLimit) / 10000,
+    },
+  };
+}
+
 // 供 node 内联 mock 自验使用（插件运行时只取 default 导出，此处无副作用）
 export const balanceParsers = {
   parseDeepSeekBalance,
@@ -217,6 +252,8 @@ export const balanceParsers = {
   parseKimiBalance,
   parseSiliconFlowBalance,
   parseOpenRouterBalance,
+  parseStepfunBalance,
+  parseNovitaBalance,
 };
 
 // ---- 套餐（Plan）用量解析（纯函数）----
@@ -276,8 +313,50 @@ function parseGlmPlanQuota(data) {
   return { exhausted: false, planName: d.planName || '', windows };
 }
 
+// 窗口百分比：保留一位小数，clamp 0–100
+function pctOf(used, total) {
+  if (!total || total <= 0) return 0;
+  return Math.max(0, Math.min(100, Math.round(((used / total) * 100) * 10) / 10));
+}
+
+// ISO 时间字符串 -> epoch ms（MiniMax reset_time 形如 2026-06-19T21:00:00+08:00）
+function parseIsoTs(s) {
+  if (!s) return null;
+  const t = Date.parse(String(s));
+  return Number.isFinite(t) ? t : null;
+}
+
+// MiniMax Token Plan remains：{ base_resp:{status_code,status_msg}, data:{ current_interval_*, current_weekly_* } }
+// status_code 0 = 成功（旧文档写顶层 code:0，现以 base_resp 为准，双形态兼容）；
+// 5h 窗口是滚动窗口（rolling），reset 为衰减点非整点
+function parseMiniMaxPlanRemains(data) {
+  const base = data && data.base_resp;
+  const code = base && base.status_code != null ? num(base.status_code)
+    : data && data.code != null ? num(data.code) : null;
+  if (code != null && code !== 0) {
+    const msg = (base && base.status_msg) || (data && data.msg) || 'MiniMax 接口返回 ' + code;
+    const err = new Error(msg);
+    // 1004 login fail：通常是用错 key（pay-as-you-go API Key 调不了此接口）或 key 无效
+    if (/login fail|auth/i.test(msg) || code === 1004 || code === 401) err.kind = 'auth';
+    throw err;
+  }
+  const d = (data && data.data) || {};
+  const windows = [];
+  const add = (type, usedRaw, totalRaw, resetRaw) => {
+    if (totalRaw == null || num(totalRaw) <= 0) return;
+    const total = num(totalRaw);
+    const used = num(usedRaw);
+    windows.push({ type, used, total, percent: pctOf(used, total), resetAt: parseIsoTs(resetRaw) });
+  };
+  add('5h', d.current_interval_usage_count, d.current_interval_total_count, d.current_interval_reset_time);
+  add('weekly', d.current_weekly_usage_count, d.current_weekly_total_count, d.current_weekly_reset_time);
+  if (windows.length === 0) throw new Error('MiniMax 响应缺少窗口额度字段');
+  const exhausted = windows.length > 0 && windows.every((w) => w.used >= w.total);
+  return { exhausted, planName: d.planName || 'Token Plan', windows };
+}
+
 // 供 mock 自验使用
-export const planParsers = { parseGlmPlanQuota };
+export const planParsers = { parseGlmPlanQuota, parseMiniMaxPlanRemains };
 
 // ---- 套餐 API 用量解析（model-usage，纯函数）----
 // 实测响应：{ code:200, data: { x_time:[小时刻度], modelCallCount:[每小时调用],
@@ -305,6 +384,40 @@ function parseGlmUsage(data) {
 }
 export const usageParsers = { parseGlmUsage };
 
+// ---- 错误二分（借鉴 cc-switch 的语义区分）----
+// kind:'auth'      凭证无效/登录态过期（结论性，重试无意义，提示用户换 key）
+// kind:'exhausted' 欠费/额度耗尽（结论性）
+// kind:'transient' 网络故障/超时/限流/5xx/响应异常（瞬时，可自动重试）
+// 违反约定：parser throw 的 Error 可带 kind 属性，路由层优先读取
+function classifyHttpFail(status) {
+  if (status === 402) return 'exhausted';
+  if (status === 401 || status === 403) return 'auth';
+  return 'transient'; // 429 限流 / 5xx / 其他
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// 瞬时故障自动重试一次：网络异常/超时（fetch throw）与 429/5xx；结论性状态码不重试
+const TRANSIENT_RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+async function fetchWithRetry(fetcher, url, init) {
+  try {
+    const res = await fetcher(url, init);
+    if (!res.ok && TRANSIENT_RETRY_STATUS.has(res.status)) {
+      await sleep(1200);
+      return await fetcher(url, init);
+    }
+    return res;
+  } catch (err) {
+    await sleep(1200);
+    return await fetcher(url, init);
+  }
+}
+
+// ---- keep-last-good：内存快照，查询失败时带上上次成功数据（stale 标记）----
+// 插件重启丢失可接受；plan 的 exhausted 也算有效结论性数据，同样保留
+const lastGoodBalance = new Map(); // provider id -> { data, fetchedAt }
+const lastGoodPlan = new Map();
+
 // ---- 余额供应商注册表：每家一个 adapter（端点 + 头 + 解析），新增平台只需追加一条 ----
 // query(env) 返回 null 表示「未配置 key，跳过」；{ ok, ... } 为查询结果；throw 由路由层兜底为 ok:false
 const BALANCE_PROVIDERS = [
@@ -318,9 +431,10 @@ const BALANCE_PROVIDERS = [
         headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
         timeoutMs: 8000,
       });
-      if (!res.ok) return { ok: false, message: `余额接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `余额接口返回 ${res.status}` };
       const { available, balance } = parseDeepSeekBalance(await res.json());
-      return { ok: true, available, balance };
+      // 欠费不可用是结论性状态，kind 标 exhausted 供前端统一标红
+      return { ok: true, available, balance, ...(available ? {} : { kind: 'exhausted' }) };
     },
   },
   {
@@ -340,7 +454,7 @@ const BALANCE_PROVIDERS = [
         },
         timeoutMs: 8000,
       });
-      if (!res.ok) return { ok: false, message: `智谱余额接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `智谱余额接口返回 ${res.status}` };
       const { balance } = parseGlmBalance(await res.json());
       return { ok: true, balance };
     },
@@ -355,7 +469,7 @@ const BALANCE_PROVIDERS = [
         headers: { Authorization: `Bearer ${key}` },
         timeoutMs: 8000,
       });
-      if (!res.ok) return { ok: false, message: `Kimi 余额接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `Kimi 余额接口返回 ${res.status}` };
       const { balance } = parseKimiBalance(await res.json());
       return { ok: true, balance };
     },
@@ -370,7 +484,7 @@ const BALANCE_PROVIDERS = [
         headers: { Authorization: `Bearer ${key}` },
         timeoutMs: 8000,
       });
-      if (!res.ok) return { ok: false, message: `硅基流动接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `硅基流动接口返回 ${res.status}` };
       const { balance } = parseSiliconFlowBalance(await res.json());
       return { ok: true, balance };
     },
@@ -385,8 +499,38 @@ const BALANCE_PROVIDERS = [
         headers: { Authorization: `Bearer ${key}` },
         timeoutMs: 8000,
       });
-      if (!res.ok) return { ok: false, message: `OpenRouter 接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `OpenRouter 接口返回 ${res.status}` };
       const { balance } = parseOpenRouterBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+  {
+    id: 'stepfun', name: '阶跃 StepFun', currency: 'CNY',
+    keys: ['stepfunApiKey'],
+    async query(env) {
+      const key = await env.getKey('stepfunApiKey');
+      if (!key) return null;
+      const res = await env.fetch(STEPFUN_ACCOUNTS_URL, {
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `阶跃接口返回 ${res.status}` };
+      const { balance } = parseStepfunBalance(await res.json());
+      return { ok: true, balance };
+    },
+  },
+  {
+    id: 'novita', name: 'Novita AI', currency: 'USD',
+    keys: ['novitaApiKey'],
+    async query(env) {
+      const key = await env.getKey('novitaApiKey');
+      if (!key) return null;
+      const res = await env.fetch(NOVITA_BALANCE_URL, {
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `Novita 接口返回 ${res.status}` };
+      const { balance } = parseNovitaBalance(await res.json());
       return { ok: true, balance };
     },
   },
@@ -416,7 +560,7 @@ const PLAN_PROVIDERS = [
       // 先按控制台默认形态请求；limits 为空可能是 scope 问题（CodexBar 文档：缺选择器时返回空限额），
       // 回落 team scope（?type=2）再试一次，仍空则维持原结果（视为未订阅套餐）
       let res = await call(GLM_PLAN_QUOTA_URL);
-      if (!res.ok) return { ok: false, message: `智谱套餐接口返回 ${res.status}` };
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `智谱套餐接口返回 ${res.status}` };
       let parsed = parseGlmPlanQuota(await res.json());
       if (parsed.windows.length === 0 && !parsed.exhausted) {
         try {
@@ -428,6 +572,21 @@ const PLAN_PROVIDERS = [
         } catch (e) { /* 回落失败维持原结果 */ }
       }
       return { ok: true, ...parsed };
+    },
+  },
+  {
+    id: 'minimax', name: 'MiniMax Token Plan',
+    keys: ['minimaxSubscriptionKey'],
+    async query(env) {
+      const key = await env.getKey('minimaxSubscriptionKey');
+      if (!key) return null;
+      const res = await env.fetch(MINIMAX_PLAN_REMAINS_URL, {
+        headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
+        timeoutMs: 8000,
+      });
+      if (!res.ok) return { ok: false, kind: classifyHttpFail(res.status), message: `MiniMax 套餐接口返回 ${res.status}` };
+      const { exhausted, planName, windows } = parseMiniMaxPlanRemains(await res.json());
+      return { ok: true, exhausted, planName, windows };
     },
   },
 ];
@@ -458,15 +617,23 @@ export default function registerPluginUiRoutes(app, ctx) {
     const fetcher = rctx && rctx.network && rctx.network.fetch;
     if (!fetcher) return c.json({ ok: false, message: '宿主未提供 network.fetch 能力' });
 
+    const retryFetcher = (url, init) => fetchWithRetry(fetcher, url, init);
     const results = await Promise.all(BALANCE_PROVIDERS.map(async (p) => {
       let r;
       try {
-        r = await p.query({ getKey, fetch: fetcher, log });
+        r = await p.query({ getKey, fetch: retryFetcher, log });
       } catch (err) {
-        r = { ok: false, message: String(err && err.message || err) };
+        // parser throw：带 kind 属性的（如智谱登录态过期）优先；其余视为瞬时异常
+        r = { ok: false, kind: (err && err.kind) || 'transient', message: String(err && err.message || err) };
       }
       if (!r) return null; // 未配置 key，跳过该家
-      log('balances[' + p.id + ']: ' + (r.ok ? 'ok' : 'fail ' + (r.message || '')));
+      if (r.ok) {
+        lastGoodBalance.set(p.id, { data: r, fetchedAt: Date.now() });
+      } else {
+        const lg = lastGoodBalance.get(p.id);
+        if (lg) r.lastGood = lg;
+      }
+      log('balances[' + p.id + ']: ' + (r.ok ? 'ok' : 'fail ' + (r.kind || '') + ' ' + (r.message || '')));
       return { id: p.id, name: p.name, currency: p.currency, ...r };
     }));
 
@@ -474,32 +641,65 @@ export default function registerPluginUiRoutes(app, ctx) {
     return c.json({ ok: true, configured: list.length, results: list });
   });
 
-  // ---- 套餐（Plan）用量：当前实装智谱 GLM Coding Plan，按 PLAN_PROVIDERS 逐家查询 ----
+  // ---- 套餐（Plan）用量：按 PLAN_PROVIDERS 逐家聚合（智谱 GLM / MiniMax），单家失败不影响其他家 ----
+  const NEED_KEY_MESSAGE = {
+    glm: '未配置智谱 GLM 登录态（access_token / 组织ID / 项目ID）',
+    minimax: '未配置 MiniMax Subscription Key（Billing > Token Plan 页获取；注意不是 pay-as-you-go 的 API Key）',
+  };
+
+  const runPlanProviders = async (getKey, fetcher) => {
+    const retryFetcher = (url, init) => fetchWithRetry(fetcher, url, init);
+    const results = await Promise.all(PLAN_PROVIDERS.map(async (p) => {
+      let r;
+      try {
+        r = await p.query({ getKey, fetch: retryFetcher, log });
+      } catch (err) {
+        r = { ok: false, kind: (err && err.kind) || 'transient', message: String(err && err.message || err) };
+      }
+      if (!r) return null; // 未配置 key，跳过该家
+      if (r.ok) {
+        lastGoodPlan.set(p.id, { data: r, fetchedAt: Date.now() });
+      } else {
+        const lg = lastGoodPlan.get(p.id);
+        if (lg) r.lastGood = lg;
+      }
+      log('plan[' + p.id + ']: ' + (r.ok ? 'ok windows=' + ((r.windows || []).length) + (r.exhausted ? ' (exhausted)' : '') : 'fail ' + (r.kind || '') + ' ' + (r.message || '')));
+      return { id: p.id, name: p.name, ...r };
+    }));
+    return results.filter(Boolean);
+  };
+
+  // GET /api/plans —— 聚合所有已配置套餐平台的用量（前端统一入口）
+  app.get('/api/plans', async (c) => {
+    log('plans request');
+    const getKey = makeKeyGetter(c);
+    const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
+    const fetcher = rctx && rctx.network && rctx.network.fetch;
+    if (!fetcher) return c.json({ ok: false, message: '宿主未提供 network.fetch 能力' });
+    const results = await runPlanProviders(getKey, fetcher);
+    return c.json({ ok: true, configured: results.length, results });
+  });
+
+  // GET /api/glm-plan —— 兼容保留：仅智谱 GLM Plan（日报推送等旧调用方仍走这里）
   app.get('/api/glm-plan', async (c) => {
     log('glm-plan request');
     const getKey = makeKeyGetter(c);
     const rctx = (c && c.get && c.get('pluginCtx')) || ctx;
     const fetcher = rctx && rctx.network && rctx.network.fetch;
     if (!fetcher) return c.json({ ok: false, message: '宿主未提供 network.fetch 能力' });
-
+    const results = await runPlanProviders(getKey, fetcher);
     const provider = PLAN_PROVIDERS.find((p) => p.id === 'glm');
-    let r;
-    try {
-      r = await provider.query({ getKey, fetch: fetcher, log });
-    } catch (err) {
-      return c.json({ ok: false, message: String(err && err.message || err) });
-    }
+    const r = results.find((x) => x.id === 'glm');
     if (!r) {
-      return c.json({ ok: true, hasPlan: false, reason: 'needKey', message: '未配置智谱 GLM 登录态（access_token / 组织ID / 项目ID）' });
+      return c.json({ ok: true, hasPlan: false, reason: 'needKey', message: NEED_KEY_MESSAGE.glm });
     }
     if (!r.ok) {
-      return c.json({ ok: false, hasPlan: true, name: provider.name, message: r.message });
+      return c.json({ ok: false, hasPlan: true, name: provider.name, kind: r.kind, message: r.message });
     }
     // 窗口为空且非「积分耗尽」→ 视为当前账号未订阅套餐
     if (!r.exhausted && (!r.windows || r.windows.length === 0)) {
       return c.json({ ok: true, hasPlan: false, reason: 'noPlan', message: '当前账号未查询到 Coding Plan 用量（可能未订阅）', planName: r.planName || '' });
     }
-    log('glm-plan: ok, windows=' + r.windows.length + (r.exhausted ? ' (exhausted)' : ''));
     return c.json({
       ok: true,
       hasPlan: true,
